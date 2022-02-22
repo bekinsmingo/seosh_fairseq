@@ -95,11 +95,6 @@ root@ae753a5ee1a0:/workspace/fairseq/tests# python3 test_roberta.py
 root@ae753a5ee1a0:/workspace/fairseq/tests# 
 ```
 
-- addtionally...
-
-```
-pip install tensorboardX
-```
 
 ## 3. Apex (cuda major capability<7 (e.g. p40) 인 경우 fp16이 효과가 없을 수 있음)
 
