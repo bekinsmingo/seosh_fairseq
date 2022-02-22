@@ -71,33 +71,34 @@ pip install --editable ./
 * check
 
 ```bash
-python3 -c "import fairseq; from fairseq.examples.speech_recognition.w2l_decoder import W2lDecoder;"
+python3 -c "import fairseq; from fairseq.models.transformer_lm import TransformerLanguageModel;"
 ```
 
 * if u got error like this...
 
-```python
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-  File "/workspace/fairseq/examples/speech_recognition/__init__.py", line 1, in <module>
-    from . import criterions, models, tasks  # noqa
-  File "/workspace/fairseq/examples/speech_recognition/criterions/__init__.py", line 15, in <module>
-    importlib.import_module(
-  File "/usr/lib/python3.8/importlib/__init__.py", line 127, in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-ModuleNotFoundError: No module named 'examples'
-```
-
 ```bash
-cd $FAIRSEQ_ROOT &&\
-python setup.py build develop
+root@ae753a5ee1a0:/# python3 -c "import fairseq; from fairseq.models.transformer_lm import TransformerLanguageModel;"
+2022-02-22 09:19:02 | INFO | fairseq.tasks.text_to_speech | Please install tensorboardX: pip install tensorboardX
+root@ae753a5ee1a0:/# 
 ```
 
 * example run using fairseq
 
 ```bash
-cd $FAIRSEQ_ROOT/tests/speech &&\
-python3 test_wav2vec2.py
+cd $FAIRSEQ_ROOT/tests &&\
+python3 test_roberta.py
+```
+
+```
+root@ae753a5ee1a0:/workspace/fairseq/tests# python3 test_roberta.py
+2022-02-22 09:17:33 | INFO | fairseq.tasks.text_to_speech | Please install tensorboardX: pip install tensorboardX
+root@ae753a5ee1a0:/workspace/fairseq/tests# 
+```
+
+- addtionally...
+
+```
+pip install tensorboardX
 ```
 
 ## 3. Apex (cuda major capability<7 (e.g. p40) 인 경우 fp16이 효과가 없을 수 있음)
