@@ -258,6 +258,17 @@ class SequenceGenerator(nn.Module):
         with torch.autograd.profiler.record_function("EnsembleModel: forward_encoder"):
             encoder_outs = self.model.forward_encoder(net_input)
 
+        # import pdb; pdb.set_trace()
+
+        '''
+        (Pdb) net_input.keys()
+        dict_keys(['source', 'padding_mask'])
+        (Pdb) net_input['source'].size()
+        torch.Size([7, 522320])
+        (Pdb) type(encoder_outs)
+        <class 'NoneType'>
+        '''
+
         # placeholder of indices for bsz * beam_size to hold tokens and accumulative scores
         new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
         new_order = new_order.to(src_tokens.device).long()
@@ -336,12 +347,56 @@ class SequenceGenerator(nn.Module):
             with torch.autograd.profiler.record_function(
                 "EnsembleModel: forward_decoder"
             ):
+                # import pdb; pdb.set_trace()
                 lprobs, avg_attn_scores = self.model.forward_decoder(
                     tokens[:, : step + 1],
                     encoder_outs,
                     incremental_states,
                     self.temperature,
                 )
+
+            import pdb; pdb.set_trace()
+
+            '''
+            (Pdb) print(step); tokens[:, : step + 1]
+            11
+            tensor([[ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
+                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13]], device='cuda:0')
+            '''
+            # batch * seq_len * vocab 
 
             if self.lm_model is not None:
                 lm_out = self.lm_model(tokens[:, : step + 1])
@@ -788,6 +843,9 @@ class EnsembleModel(nn.Module):
         for i, model in enumerate(self.models):
             if self.has_encoder():
                 encoder_out = encoder_outs[i]
+
+            # import pdb; pdb.set_trace()
+
             # decode each model
             if self.has_incremental_states():
                 decoder_out = model.decoder.forward(

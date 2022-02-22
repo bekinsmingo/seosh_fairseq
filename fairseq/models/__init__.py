@@ -29,6 +29,7 @@ from .fairseq_model import (
     FairseqMultiModel,
 )
 
+from omegaconf import OmegaConf
 
 MODEL_REGISTRY = {}
 MODEL_DATACLASS_REGISTRY = {}
@@ -56,6 +57,8 @@ __all__ = [
 def build_model(cfg: FairseqDataclass, task, from_checkpoint=False):
 
     model = None
+    # if type(cfg) is dict:
+    #     cfg = OmegaConf.create(cfg)
     model_type = getattr(cfg, "_name", None) or getattr(cfg, "arch", None)
 
     if not model_type and len(cfg) == 1:
@@ -96,6 +99,8 @@ def build_model(cfg: FairseqDataclass, task, from_checkpoint=False):
                 # hydra models should expose different architectures via different config files
                 # it will modify the cfg object and default parameters according to the arch
                 ARCH_CONFIG_REGISTRY[model_type](cfg)
+
+    # import pdb; pdb.set_trace() 
 
     assert model is not None, (
         f"Could not infer model type from {cfg}. "

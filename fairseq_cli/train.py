@@ -359,6 +359,7 @@ def validate_and_save(
 
     # Stopping conditions (and an additional one based on validation loss later
     # on)
+    # maxupdate 넘어가면 validation 안함
     should_stop = False
     if num_updates >= max_update:
         should_stop = True
@@ -367,6 +368,7 @@ def validate_and_save(
             f"num_updates: {num_updates} >= max_update: {max_update}"
         )
 
+    # 일정시간 이상 학습했으면 멈춤
     training_time_hours = trainer.cumulative_training_time() / (60 * 60)
     if (
         cfg.optimization.stop_time_hours > 0
@@ -379,6 +381,7 @@ def validate_and_save(
             f"stop_time_hours: {cfg.optimization.stop_time_hours} hour(s)"
         )
 
+    # save_interval 은 epoch interval을 말하고 save_interval_updates 은 step intreval을 말함.
     do_save = (
         (end_of_epoch and epoch_itr.epoch % cfg.checkpoint.save_interval == 0)
         or should_stop
@@ -389,6 +392,8 @@ def validate_and_save(
             and num_updates >= cfg.dataset.validate_after_updates
         )
     )
+
+    # 아하 validation을 안해서그러네 ㅅㅂ validate_interval_updates도 설정해줘야함
     do_validate = (
         (
             (not end_of_epoch and do_save)  # validate during mid-epoch saves

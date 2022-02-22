@@ -114,6 +114,9 @@ def eval_lm(
         hypos = scorer.generate(models, sample)
         gen_timer.stop(sample["ntokens"])
 
+        # import pdb
+        # pdb.set_trace()
+
         for i, hypos_i in enumerate(hypos):
             hypo = hypos_i[0]
             sample_id = sample["id"][i]
@@ -181,6 +184,7 @@ def eval_lm(
                             )
                         )
                     )
+
 
     avg_nll_loss = (
         -score_sum / count / math.log(2) if count > 0 else 0

@@ -17,9 +17,9 @@ from omegaconf import MISSING, II, OmegaConf
 from fairseq.data import BinarizedAudioDataset, FileAudioDataset
 from fairseq.dataclass import FairseqDataclass, ChoiceEnum
 from fairseq.data.text_compressor import TextCompressionLevel
+# from fairseq.dataclass.configs import GenerationConfig
 
 from . import FairseqTask, register_task
-
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,21 @@ class AudioPretrainingConfig(FairseqDataclass):
             "help": "flag to compute mask indices in data preparation.",
         },
     )
+
+    # ## added for xlsr
+    # multiple_train_files: bool = field(
+    #     default=False,
+    #     metadata={
+    #         "help": "tmp",
+    #     },
+    # )
+    # eval_wer: bool = field(
+    #     default=False, metadata={"help": "compute WER for Seq2Seq models"}
+    # )
+    # eval_wer_config: GenerationConfig = field(
+    #     default_factory=lambda: GenerationConfig(),
+    #     metadata={"help": "beam search config for evaluating wer during training"},
+    # )
 
     inferred_w2v_config: Optional[InferredW2vConfig] = field(
         default=None,

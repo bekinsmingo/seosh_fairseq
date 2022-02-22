@@ -20,9 +20,13 @@ TASK_DATACLASS_REGISTRY = {}
 TASK_REGISTRY = {}
 TASK_CLASS_NAMES = set()
 
+from omegaconf import OmegaConf
+
 
 def setup_task(cfg: FairseqDataclass, **kwargs):
     task = None
+    # if type(cfg) is dict:
+    #     cfg = OmegaConf.create(cfg)
     task_name = getattr(cfg, "task", None)
 
     if isinstance(task_name, str):
@@ -36,7 +40,13 @@ def setup_task(cfg: FairseqDataclass, **kwargs):
 
         if task_name and task_name in TASK_DATACLASS_REGISTRY:
             dc = TASK_DATACLASS_REGISTRY[task_name]
-            cfg = merge_with_parent(dc(), cfg)
+            # import pdb; pdb.set_trace()
+            # cfg = merge_with_parent(dc(), cfg)
+            # if ('multiple_train_files' in cfg.keys()) or ('cache_in_scratch' in cfg.keys()):
+            if ('multiple_train_files' in cfg.keys()):
+                cfg = merge_with_parent(dc(), cfg, remove_missing=True)
+            else:
+                cfg = merge_with_parent(dc(), cfg)
             task = TASK_REGISTRY[task_name]
 
     assert (

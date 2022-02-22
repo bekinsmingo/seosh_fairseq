@@ -23,6 +23,7 @@ from fairseq.models.wav2vec import (
     Wav2Vec2Config,
     TransformerEncoder,
 )
+
 from fairseq.modules import (
     GradMultiply,
     LayerNorm,
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Data2VecAudioConfig(Wav2Vec2Config):
 
+    # l1 smooth loss의 하이퍼 파라메터
     loss_beta: float = field(
         default=0, metadata={"help": "beta for smooth l1 loss. 0 means use l2 loss"}
     )
@@ -45,6 +47,8 @@ class Data2VecAudioConfig(Wav2Vec2Config):
             "help": "scale the reconstruction loss by this constant. if None then scales by 1/sqrt(dim)"
         },
     )
+
+    # 상위 k 개 레이어의 output을 averaging해서 타겟으로 사용함. 
     average_top_k_layers: int = field(
         default=8, metadata={"help": "how many layers to average"}
     )
@@ -56,6 +60,7 @@ class Data2VecAudioConfig(Wav2Vec2Config):
     batch_norm_target_layer: bool = False
     group_norm_target_layer: bool = False
 
+    # EMA decay 하이퍼 파라메터
     ema_decay: float = field(default=0.999, metadata={"help": "initial ema decay rate"})
     ema_end_decay: float = field(
         default=0.9999, metadata={"help": "final ema decay rate"}
@@ -96,80 +101,208 @@ class Data2VecAudioModel(BaseFairseqModel):
         super().__init__()
         self.cfg = cfg
 
-        feature_enc_layers = eval(cfg.conv_feature_layers)
-        self.extractor_embed = feature_enc_layers[-1][0]
+        feature_enc_layers = eval(cfg.conv_feature_layers) 
+        '''
+        (Pdb) cfg.conv_feature_layers
+        '[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512,2,2)] + [(512,2,2)]'
+        (Pdb) eval
+        <built-in function eval>
+
+        (Pdb) feature_enc_layers
+        [(512, 10, 5), (512, 3, 2), (512, 3, 2), (512, 3, 2), (512, 3, 2), (512, 2, 2), (512, 2, 2)]
+        '''
+
+        self.extractor_embed = feature_enc_layers[-1][0] # 512
 
         self.ema = None
-        self.embed = cfg.encoder_embed_dim
+        self.embed = cfg.encoder_embed_dim # 768
 
-        self.average_top_k_layers = cfg.average_top_k_layers
-        self.loss_beta = cfg.loss_beta
-        self.loss_scale = cfg.loss_scale
+        # top-k layer
+        self.average_top_k_layers = cfg.average_top_k_layers # 8
 
+        # loss
+        self.loss_beta = cfg.loss_beta # 0.0
+        self.loss_scale = cfg.loss_scale # None
+
+        # 7 layer 1d CNN
         self.feature_extractor = ConvFeatureExtractionModel(
-            conv_layers=feature_enc_layers,
+            conv_layers=feature_enc_layers, # [(512, 10, 5), (512, 3, 2), (512, 3, 2), (512, 3, 2), (512, 3, 2), (512, 2, 2), (512, 2, 2)]
             dropout=0.0,
-            mode=cfg.extractor_mode,
-            conv_bias=cfg.conv_bias,
+            mode=cfg.extractor_mode, # layer_norm
+            conv_bias=cfg.conv_bias, # False
         )
 
-        self.post_extract_proj = nn.Linear(self.extractor_embed, cfg.encoder_embed_dim)
+        '''
+        (Pdb) self.feature_extractor
+        ConvFeatureExtractionModel(
+        (conv_layers): ModuleList(
+            (0): Sequential(
+            (0): Conv1d(1, 512, kernel_size=(10,), stride=(5,), bias=False)
+            (1): Dropout(p=0.0, inplace=False)
+            (2): Sequential(
+                (0): TransposeLast()
+                (1): Fp32LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (2): TransposeLast()
+            )
+            ...
 
-        self.mask_prob = cfg.mask_prob
-        self.mask_selection = cfg.mask_selection
-        self.mask_other = cfg.mask_other
-        self.mask_length = cfg.mask_length
-        self.no_mask_overlap = cfg.no_mask_overlap
-        self.mask_min_space = cfg.mask_min_space
+            (3): GELU()
+            )
+            (6): Sequential(
+            (0): Conv1d(512, 512, kernel_size=(2,), stride=(2,), bias=False)
+            (1): Dropout(p=0.0, inplace=False)
+            (2): Sequential(
+                (0): TransposeLast()
+                (1): Fp32LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (2): TransposeLast()
+            )
+            (3): GELU()
+            )
+        )
+        )
+        '''
 
-        self.mask_channel_prob = cfg.mask_channel_prob
-        self.mask_channel_before = cfg.mask_channel_before
-        self.mask_channel_selection = cfg.mask_channel_selection
-        self.mask_channel_other = cfg.mask_channel_other
-        self.mask_channel_length = cfg.mask_channel_length
-        self.no_mask_channel_overlap = cfg.no_mask_channel_overlap
-        self.mask_channel_min_space = cfg.mask_channel_min_space
+        self.post_extract_proj = nn.Linear(self.extractor_embed, cfg.encoder_embed_dim) 
+        # Linear(in_features=512, out_features=768, bias=True)
 
-        self.dropout_input = nn.Dropout(cfg.dropout_input)
-        self.dropout_features = nn.Dropout(cfg.dropout_features)
+        self.mask_prob = cfg.mask_prob # 0.65
+        self.mask_selection = cfg.mask_selection # static
+        self.mask_other = cfg.mask_other # 0.0
+        self.mask_length = cfg.mask_length # 10
+        self.no_mask_overlap = cfg.no_mask_overlap # False
+        self.mask_min_space = cfg.mask_min_space # 1
 
-        self.feature_grad_mult = cfg.feature_grad_mult
+        self.mask_channel_prob = cfg.mask_channel_prob # 0.0
+        self.mask_channel_before = cfg.mask_channel_before # False
+        self.mask_channel_selection = cfg.mask_channel_selection # static
+        self.mask_channel_other = cfg.mask_channel_other # 0.0
+        self.mask_channel_length = cfg.mask_channel_length # 10
+        self.no_mask_channel_overlap = cfg.no_mask_channel_overlap # False
+        self.mask_channel_min_space = cfg.mask_channel_min_space # 1
+
+        self.dropout_input = nn.Dropout(cfg.dropout_input) 
+        # Dropout(p=0.0, inplace=False), maybe for raw audio
+
+        self.dropout_features = nn.Dropout(cfg.dropout_features) 
+        # Dropout(p=0.0, inplace=False), maybe for features after 7 layer 1d cnn
+
+        self.feature_grad_mult = cfg.feature_grad_mult # 1.0
 
         self.mask_emb = nn.Parameter(
             torch.FloatTensor(cfg.encoder_embed_dim).uniform_()
-        )
+        ) # (Pdb) self.mask_emb.size(), torch.Size([768])
 
         self.encoder = TransformerEncoder(cfg)
-        self.layer_norm = LayerNorm(self.extractor_embed)
+        # transformer 뿐만 아니라 pos conv 가 있음.
+        '''
+        TransformerEncoder(
+        (pos_conv): Sequential(
+            (0): Sequential(
+            (0): Conv1d(768, 768, kernel_size=(19,), stride=(1,), padding=(9,), groups=16)
+            (1): SamePad()
+            (2): TransposeLast()
+            (3): FusedLayerNorm(torch.Size([768]), eps=1e-05, elementwise_affine=False)
+            (4): TransposeLast()
+            (5): GELU()
+            )
+            ...
+            (4): Sequential(
+            (0): Conv1d(768, 768, kernel_size=(19,), stride=(1,), padding=(9,), groups=16)
+            (1): SamePad()
+            (2): TransposeLast()
+            (3): FusedLayerNorm(torch.Size([768]), eps=1e-05, elementwise_affine=False)
+            (4): TransposeLast()
+            (5): GELU()
+            )
+        )
+        (layers): ModuleList(
+            (0): TransformerSentenceEncoderLayer(
+            (self_attn): MultiheadAttention(
+                (dropout_module): FairseqDropout()
+                (k_proj): Linear(in_features=768, out_features=768, bias=True)
+                (v_proj): Linear(in_features=768, out_features=768, bias=True)
+                (q_proj): Linear(in_features=768, out_features=768, bias=True)
+                (out_proj): Linear(in_features=768, out_features=768, bias=True)
+            )
+            (dropout1): Dropout(p=0.1, inplace=False)
+            (dropout2): Dropout(p=0.0, inplace=False)
+            (dropout3): Dropout(p=0.1, inplace=False)
+            (self_attn_layer_norm): FusedLayerNorm(torch.Size([768]), eps=1e-05, elementwise_affine=True)
+            (fc1): Linear(in_features=768, out_features=3072, bias=True)
+            (fc2): Linear(in_features=3072, out_features=768, bias=True)
+            (final_layer_norm): FusedLayerNorm(torch.Size([768]), eps=1e-05, elementwise_affine=True)
+            )
+            ...
+            (11): TransformerSentenceEncoderLayer(
+            (self_attn): MultiheadAttention(
+                (dropout_module): FairseqDropout()
+                (k_proj): Linear(in_features=768, out_features=768, bias=True)
+                (v_proj): Linear(in_features=768, out_features=768, bias=True)
+                (q_proj): Linear(in_features=768, out_features=768, bias=True)
+                (out_proj): Linear(in_features=768, out_features=768, bias=True)
+            )
+            (dropout1): Dropout(p=0.1, inplace=False)
+            (dropout2): Dropout(p=0.0, inplace=False)
+            (dropout3): Dropout(p=0.1, inplace=False)
+            (self_attn_layer_norm): FusedLayerNorm(torch.Size([768]), eps=1e-05, elementwise_affine=True)
+            (fc1): Linear(in_features=768, out_features=3072, bias=True)
+            (fc2): Linear(in_features=3072, out_features=768, bias=True)
+            (final_layer_norm): FusedLayerNorm(torch.Size([768]), eps=1e-05, elementwise_affine=True)
+            )
+        )
+        (layer_norm): FusedLayerNorm(torch.Size([768]), eps=1e-05, elementwise_affine=True)
+        )
+        '''
 
-        self.final_proj = nn.Linear(self.embed, self.embed)
+        self.layer_norm = LayerNorm(self.extractor_embed) 
+        # FusedLayerNorm(torch.Size([512]), eps=1e-05, elementwise_affine=True)
+
+        self.final_proj = nn.Linear(self.embed, self.embed) 
+        # Linear(in_features=768, out_features=768, bias=True)
 
         self.num_updates = 0
 
+
+    # Exponential Moving Average teacher 를 만들어야함.
+    # ∆ ← τ ∆ + (1 − τ ) θ
+    # \delta <- \tau * \delta + (1-\tau) * \theta
     def make_ema_teacher(self):
         ema_config = EMAModuleConfig(
-            ema_decay=self.cfg.ema_decay,
+            ema_decay=self.cfg.ema_decay, # 0.999 default
             ema_fp32=True,
         )
+        # 전체 모델이 7 layer 1d-cnn + 5 layer pos conv + 12 layer transformer encoder 인데
+        # pos conv를 제외하나?
         skip_keys = set()
         if self.cfg.ema_layers_only:
             self.cfg.ema_transformer_only = True
             for k, _ in self.encoder.pos_conv.named_parameters():
                 skip_keys.add(f"pos_conv.{k}")
 
+        # student model을 deepcopy 하는 모듈임
         self.ema = EMAModule(
             self.encoder if self.cfg.ema_transformer_only else self,
             ema_config,
             skip_keys=skip_keys,
         )
 
+        '''
+        args : model, config, device, skip_keys
+        return : copied model
+        '''
+
+    
     def set_num_updates(self, num_updates):
         super().set_num_updates(num_updates)
 
+        # 최초에 EMA teacher를 만듬
         if self.ema is None and self.final_proj is not None:
             logger.info(f"making ema teacher")
             self.make_ema_teacher()
         elif self.training and self.ema is not None:
+            # ema.set_decay(), ema.step() 이 필요함.
+            # ∆ ← τ ∆ + (1 − τ ) θ
+            # \delta <- \tau * \delta + (1-\tau) * \theta
             if self.cfg.ema_decay != self.cfg.ema_end_decay:
                 if num_updates >= self.cfg.ema_anneal_end_step:
                     decay = self.cfg.ema_end_decay
@@ -186,6 +319,7 @@ class Data2VecAudioModel(BaseFairseqModel):
 
         self.num_updates = num_updates
 
+
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         state = super().state_dict(destination, prefix, keep_vars)
 
@@ -193,6 +327,7 @@ class Data2VecAudioModel(BaseFairseqModel):
             state[prefix + "_ema"] = self.ema.fp32_params
 
         return state
+
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         if self.ema is not None:
@@ -202,12 +337,16 @@ class Data2VecAudioModel(BaseFairseqModel):
             del state_dict[k]
         return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
+
+    # build model
     @classmethod
     def build_model(cls, cfg: Data2VecAudioConfig, task=None):
         """Build a new model instance."""
-
+        
         return cls(cfg)
 
+
+    # apply mask after feature extract (1d cnn in w2v2)
     def apply_mask(
         self,
         x,
@@ -278,6 +417,7 @@ class Data2VecAudioModel(BaseFairseqModel):
 
         return x, mask_indices
 
+
     def _get_feat_extract_output_lengths(self, input_lengths: torch.LongTensor):
         """
         Computes the output length of the convolutional layers
@@ -295,23 +435,38 @@ class Data2VecAudioModel(BaseFairseqModel):
 
         return input_lengths.to(torch.long)
 
+
     def forward(
         self,
-        source,
-        padding_mask=None,
-        mask=True,
-        features_only=False,
-        layer=None,
-        mask_indices=None,
+        source, # wav input
+        padding_mask=None, # ??
+        mask=True, 
+        features_only=False, # SSL 할거냐
+        layer=None, 
+        mask_indices=None, # inptu mask
         mask_channel_indices=None,
         padding_count=None,
     ):
         features = source
 
+        # 1d cnn 으로 down sampling 한 feautre를 추출함.
         if self.feature_grad_mult > 0:
             features = self.feature_extractor(features)
             if self.feature_grad_mult != 1.0:
                 features = GradMultiply.apply(features, self.feature_grad_mult)
+                # GradMultiply는 아마 단순히 gradient의 magnitude를 건드리는듯?
+                '''
+                class GradMultiply(torch.autograd.Function):
+                    @staticmethod
+                    def forward(ctx, x, scale):
+                        ctx.scale = scale
+                        res = x.new(x)
+                        return res
+
+                    @staticmethod
+                    def backward(ctx, grad):
+                        return grad * ctx.scale, None
+                '''
         else:
             with torch.no_grad():
                 features = self.feature_extractor(features)
@@ -322,6 +477,9 @@ class Data2VecAudioModel(BaseFairseqModel):
 
         orig_padding_mask = padding_mask
 
+        import pdb; pdb.set_trace()
+
+        # 1d conv 이후의 output_lengths 를 계산하고 이를 바탕으로 padding mask를 다시 만드는?
         if padding_mask is not None and padding_mask.any():
             input_lengths = (1 - padding_mask.long()).sum(-1)
             # apply conv formula to get real output_lengths
@@ -343,15 +501,23 @@ class Data2VecAudioModel(BaseFairseqModel):
         else:
             padding_mask = None
 
+
+        # 1d cnn을 통과시킨 뒤에 post projection을 또 하는 이유는 뭘까? 
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
 
+
+        # w2v2가 1d cnn + pos conv + transformer인데
+        # ema를 transformer부분만 할건지, 1d cnn + transformer 둘 다 할건지를 정함?
         pre_encoder_features = None
         if self.cfg.ema_transformer_only:
             pre_encoder_features = features.clone()
 
+        # self.dropout_features 는 그럼 어디에 쓰이지?
         features = self.dropout_input(features)
 
+        # 1d cnn을 통과한 (down sampling된) feature를 마스킹함.
+        # finetuning을 할 때는 masking이 필요없어서 if, else로 나눈듯
         if mask:
             x, mask_indices = self.apply_mask(
                 features,
@@ -363,12 +529,14 @@ class Data2VecAudioModel(BaseFairseqModel):
             x = features
             mask_indices = None
 
+        # pos conv + transformer 를 통과시킴
         x, layer_results = self.encoder(
             x,
             padding_mask=padding_mask,
             layer=layer,
         )
 
+        # finetuning 시에 사용함, finetuning 시에는 ema representation이 필요 없음.
         if features_only:
             return {
                 "x": x,
@@ -376,18 +544,25 @@ class Data2VecAudioModel(BaseFairseqModel):
                 "layer_results": layer_results,
             }
 
+
+        ## ema training 할 경우
+        # result bucket
         result = {
             "losses": {},
         }
 
+        # teacher mode의 representation을 뽑으려면 이는 업데이트되는게 아니므로
+        # no grad, eval mode 가 필요함.
         with torch.no_grad():
             self.ema.model.eval()
 
+            # whether to momentum update only the transformer
+            # 즉 pos conv 말고 transformer만 업데이트 할건지를 정하는듯?
             if self.cfg.ema_transformer_only:
                 y, layer_results = self.ema.model.extract_features(
-                    pre_encoder_features,
+                    pre_encoder_features, # pre_encoder_features 가 None 이냐 featrues.clone() 이냐
                     padding_mask=padding_mask,
-                    min_layer=self.cfg.encoder_layers - self.average_top_k_layers,
+                    min_layer=self.cfg.encoder_layers - self.average_top_k_layers, # top-k 개수만 제외하고
                 )
                 y = {
                     "x": y,
@@ -453,11 +628,14 @@ class Data2VecAudioModel(BaseFairseqModel):
 
             y = y[mask_indices]
 
+
+        # x는 여전히 wav2vec encoder output
         x = x[mask_indices]
         x = self.final_proj(x)
 
         sz = x.size(-1)
 
+        # teacher - student 간 l1 loss 계산 (smooth or not)
         if self.loss_beta == 0:
             loss = F.mse_loss(x.float(), y.float(), reduction="none").sum(dim=-1)
         else:
@@ -465,19 +643,23 @@ class Data2VecAudioModel(BaseFairseqModel):
                 x.float(), y.float(), reduction="none", beta=self.loss_beta
             ).sum(dim=-1)
 
+
         if self.loss_scale is not None:
             scale = self.loss_scale
         else:
             scale = 1 / math.sqrt(sz)
+
 
         result["losses"]["regression"] = loss.sum() * scale
 
         if "sample_size" not in result:
             result["sample_size"] = loss.numel()
 
+
         with torch.no_grad():
             result["target_var"] = self.compute_var(y)
             result["pred_var"] = self.compute_var(x.float())
+
 
         if self.num_updates > 5000 and result["target_var"] < self.cfg.min_target_var:
             logger.error(
@@ -494,10 +676,12 @@ class Data2VecAudioModel(BaseFairseqModel):
                 f"pred var is {result['pred_var'].item()} < {self.cfg.min_pred_var}, exiting"
             )
 
+
         if self.ema is not None:
             result["ema_decay"] = self.ema.get_decay() * 1000
 
         return result
+
 
     @staticmethod
     def compute_var(y):
@@ -516,6 +700,8 @@ class Data2VecAudioModel(BaseFairseqModel):
         else:
             return torch.sqrt(y.var(dim=0) + 1e-6).mean()
 
+
+    # finetuning에 사용됨 features_only=True
     def extract_features(
         self, source, padding_mask, mask=False, layer=None
     ):
@@ -528,6 +714,8 @@ class Data2VecAudioModel(BaseFairseqModel):
         )
         return res
 
+
+    # 나중에 finetuning 할 때 pretraining에 사용한 ema와 projection layer 제거
     def remove_pretraining_modules(self, last_layer=None):
         self.final_proj = None
         self.ema = None

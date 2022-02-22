@@ -1,0 +1,8 @@
+- task=audio_pretraining
+- task.data=/workspace/librispeech_model/am/fairseq_audio_data2
+- task.labels=ltr
+- common_eval.path=/workspace/librispeech_model/am/jgkang/jgkang_w2v2_ctc_letter.pt
+- decoding.type=viterbi
+- decoding.beam=1
+- dataset.max_tokens=4000000
+- dataset.gen_subset=test_other

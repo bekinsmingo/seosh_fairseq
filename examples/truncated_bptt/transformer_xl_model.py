@@ -86,6 +86,8 @@ class TransformerXLDecoder(FairseqIncrementalDecoder):
         logger.info(config)
         self.model = TransfoXLLMHeadModel(config)
 
+        # import pdb; pdb.set_trace()
+
         if cfg.checkpoint_activations or cfg.offload_activations:
             for i in range(len(self.model.transformer.layers)):
                 self.model.transformer.layers[i] = checkpoint_wrapper(

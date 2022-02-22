@@ -27,6 +27,8 @@ from fairseq.logging.meters import StopwatchMeter, TimeMeter
 
 def main(cfg: DictConfig):
 
+    # import pdb; pdb.set_trace()
+
     if isinstance(cfg, Namespace):
         cfg = convert_namespace_to_omegaconf(cfg)
 
@@ -87,9 +89,17 @@ def _main(cfg: DictConfig, output_file):
         src_dict = getattr(task, "source_dictionary", None)
     except NotImplementedError:
         src_dict = None
+        
     tgt_dict = task.target_dictionary
 
+    # import pdb; pdb.set_trace() 
+    # (Pdb) tgt_dict # why tgt_dict is None?
+
+    # import pdb; pdb.set_trace()
+
     overrides = ast.literal_eval(cfg.common_eval.model_overrides)
+
+    # import pdb; pdb.set_trace()
 
     # Load ensemble
     logger.info("loading model(s) from {}".format(cfg.common_eval.path))
@@ -101,6 +111,7 @@ def _main(cfg: DictConfig, output_file):
         strict=(cfg.checkpoint.checkpoint_shard_count == 1),
         num_shards=cfg.checkpoint.checkpoint_shard_count,
     )
+    # import pdb; pdb.set_trace()
 
     # loading the dataset should happen after the checkpoint has been loaded so we can give it the saved task config
     task.load_dataset(cfg.dataset.gen_subset, task_cfg=saved_cfg.task)
@@ -168,6 +179,8 @@ def _main(cfg: DictConfig, output_file):
         models, cfg.generation, extra_gen_cls_kwargs=extra_gen_cls_kwargs
     )
 
+    # import pdb; pdb.set_trace()
+
     # Handle tokenization and BPE
     tokenizer = task.build_tokenizer(cfg.tokenizer)
     bpe = task.build_bpe(cfg.bpe)
@@ -180,6 +193,46 @@ def _main(cfg: DictConfig, output_file):
         return x
 
     scorer = scoring.build_scorer(cfg.scoring, tgt_dict)
+
+    # check tgt_dict once more
+    if tgt_dict==None:
+        try:
+            tgt_dict = task.target_dictionary
+        except:
+            pass
+
+    
+    if cfg.criterion._name == 'ctc':
+        total_len = list()
+        total_dist = list()
+        total_dist_ = list()
+        logging_outputs = list()
+        from fairseq.logging.meters import safe_round
+
+        # build criterion
+        criterion = task.build_criterion(cfg.criterion)
+
+        for sample in progress:
+            sample = utils.move_to_cuda(sample) if use_cuda else sample
+            if "net_input" not in sample:
+                continue
+            hypos = task.valid_step(sample, models[0], criterion)
+            '''
+            (Pdb) hypos
+            (tensor(141.6250, device='cuda:0'), 7, {'loss': 141.62496948242188, 'ntokens': 3411, 'nsentences': 7, 'sample_size': 7, 
+            'wv_errors': 33, 'w_errors': 33, 'w_total': 600, 'c_errors': 38, 'c_total': 3411})
+            '''
+            total_len.append(hypos[2]['w_total'])
+            total_dist.append(hypos[2]['w_errors'])
+            total_dist_.append(hypos[2]['wv_errors'])
+            # logging_outputs.append(hypos)
+            # task.reduce_metrics(logging_outputs, criterion)
+        # WER = sum(total_dist)/sum(total_len)
+        wer = safe_round(sum(total_dist) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan")
+        raw_wer = safe_round(sum(total_dist_) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan")
+        print('WER is {} <== ( safe_round(sum(total_dist) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan") )'.format(wer))
+        print('RAW WER is {} <== ( safe_round(sum(total_dist_) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan") )'.format(raw_wer))
+        return wer
 
     num_sentences = 0
     has_target = True
@@ -197,7 +250,12 @@ def _main(cfg: DictConfig, output_file):
         if "constraints" in sample:
             constraints = sample["constraints"]
 
+        ###################################################################################################
+        ############################################ Generation ###########################################
+        ###################################################################################################
+
         gen_timer.start()
+
         hypos = task.inference_step(
             generator,
             models,
@@ -207,6 +265,10 @@ def _main(cfg: DictConfig, output_file):
         )
         num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
         gen_timer.stop(num_generated_tokens)
+
+        import pdb; pdb.set_trace()
+
+        ###################################################################################################
 
         for i, sample_id in enumerate(sample["id"].tolist()):
             has_target = sample["target"] is not None
@@ -218,6 +280,41 @@ def _main(cfg: DictConfig, output_file):
                 )
             else:
                 src_tokens = None
+
+            # import pdb; pdb.set_trace()
+            '''
+            <<< ================== w2v2_seq2seq debugging ================== >>>
+
+            (Pdb) tgt_dict # None ? why?
+            (Pdb) task
+            <fairseq.tasks.audio_finetuning.AudioFinetuningTask object at 0x7f18ab33d5e0>
+            (Pdb) task.target_dictionary
+            <fairseq.data.dictionary.Dictionary object at 0x7f18ab33d460>
+            (Pdb) len(task.target_dictionary)
+            32
+
+            (Pdb) sample.keys()
+            dict_keys(['id', 'net_input', 'target_lengths', 'ntokens', 'target'])
+            (Pdb) sample["net_input"].keys()
+            dict_keys(['source', 'padding_mask', 'prev_output_tokens'])
+
+            (Pdb) sample['net_input']['source'].size()
+            torch.Size([7, 552160])
+            (Pdb) sample['target'].size()
+            torch.Size([7, 620])
+
+            (Pdb) len(hypos)
+            7
+            (Pdb) len(hypos[0])
+            5
+            (Pdb) hypos[0][0].keys()
+            dict_keys(['tokens', 'score', 'attention', 'alignment', 'positional_scores'])
+
+            (Pdb) src_tokens # None
+
+            (Pdb) tgt_dict.pad()
+            *** AttributeError: 'NoneType' object has no attribute 'pad'
+            '''
 
             target_tokens = None
             if has_target:
@@ -410,6 +507,7 @@ def cli_main():
         "model args (e.g. `AudioPretraining`)",
     )
     args = options.parse_args_and_arch(parser)
+    # import pdb;pdb.set_trace()
     main(args)
 
 

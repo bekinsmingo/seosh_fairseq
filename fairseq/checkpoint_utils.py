@@ -405,6 +405,9 @@ def load_model_ensemble_and_task(
     ), "Cannot load state dict with strict=True and checkpoint shards > 1"
     ensemble = []
     cfg = None
+
+    # import pdb; pdb.set_trace()
+
     for filename in filenames:
         orig_filename = filename
         model_shard_state = {"shard_weights": [], "shard_metadata": []}
@@ -433,6 +436,8 @@ def load_model_ensemble_and_task(
 
             if "task_state" in state:
                 task.load_state_dict(state["task_state"])
+
+            # import pdb; pdb.set_trace()
 
             if "fsdp_metadata" in state and num_shards > 1:
                 model_shard_state["shard_weights"].append(state["model"])

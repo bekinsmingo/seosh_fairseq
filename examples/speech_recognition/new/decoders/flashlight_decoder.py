@@ -330,6 +330,8 @@ class FairseqLMDecoder(BaseDecoder):
         with open_dict(lm_args.task):
             lm_args.task.data = osp.dirname(cfg.lmpath)
 
+        # import pdb; pdb.set_trace()
+
         task = tasks.setup_task(lm_args.task)
         model = task.build_model(lm_args.model)
         model.load_state_dict(checkpoint["model"], strict=False)
@@ -386,7 +388,7 @@ class FairseqLMDecoder(BaseDecoder):
 
             d = {w: [[w]] for w in tgt_dict.symbols}
             self.word_dict = create_word_dict(d)
-            self.lm = KenLM(cfg.lmpath, self.word_dict)
+            # self.lm = KenLM(cfg.lmpath, self.word_dict)
             self.decoder_opts = LexiconFreeDecoderOptions(
                 beam_size=cfg.beam,
                 beam_size_token=cfg.beamsizetoken or len(tgt_dict),

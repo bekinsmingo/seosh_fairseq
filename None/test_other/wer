@@ -1,0 +1,18 @@
+WER: 4.0635806124983285
+err / num_ref_words = 2127 / 52343
+
+_name: null
+nbest: 1
+unitlm: false
+lmpath: /workspace/librispeech_model/decoder/4-gram.arpa
+lexicon: /workspace/librispeech_model/librispeech_lexicon.lst
+beam: 1500
+beamthreshold: 5.0
+beamsizetoken: 100
+wordscore: -0.64
+unkweight: -.inf
+silweight: -0.4081099155147454
+lmweight: 1.57
+type: kenlm
+unique_wer_file: false
+results_path: null

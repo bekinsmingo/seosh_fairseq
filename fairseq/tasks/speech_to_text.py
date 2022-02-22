@@ -119,6 +119,7 @@ class SpeechToTextTask(LegacyFairseqTask):
         args.input_feat_per_channel = self.data_cfg.input_feat_per_channel
         args.input_channels = self.data_cfg.input_channels
         args.speaker_to_id = self.speaker_to_id
+        # import pdb;pdb.set_trace()
         return super(SpeechToTextTask, self).build_model(args, from_checkpoint)
 
     def build_generator(

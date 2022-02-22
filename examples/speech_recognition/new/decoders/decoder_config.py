@@ -68,3 +68,10 @@ class FlashlightDecoderConfig(FairseqDataclass):
         default=2,
         metadata={"help": "Weight for LM while interpolating score"},
     )
+    rescoring: bool = field(
+        default=False,
+    )
+    rescoringweight: float = field(
+        default=2,
+        metadata={"help": "Weight for LM while interpolating score"},
+    )

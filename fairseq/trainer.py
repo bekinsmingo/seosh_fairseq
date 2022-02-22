@@ -691,6 +691,10 @@ class Trainer(object):
                 data_selector=data_selector,
                 tpu=self.tpu,
             )
+
+        # import pdb
+        # pdb.set_trace()
+
         batch_iterator = self.task.get_batch_iterator(
             dataset=self.task.dataset(self.cfg.dataset.train_subset),
             max_tokens=self.cfg.dataset.max_tokens,

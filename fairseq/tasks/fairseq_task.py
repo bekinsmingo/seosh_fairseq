@@ -207,9 +207,9 @@ class FairseqTask(object):
     def get_batch_iterator(
         self,
         dataset,
-        max_tokens=None,
-        max_sentences=None,
-        max_positions=None,
+        max_tokens=None, # bbs tokens
+        max_sentences=None, # batch_size
+        max_positions=None, # 
         ignore_invalid_inputs=False,
         required_batch_size_multiple=1,
         seed=1,
@@ -465,6 +465,8 @@ class FairseqTask(object):
             else:
                 seq_gen_cls = SequenceGenerator
 
+        # import pdb; pdb.set_trace()
+
         return seq_gen_cls(
             models,
             self.target_dictionary,
@@ -505,6 +507,154 @@ class FairseqTask(object):
                   gradient
                 - logging outputs to display while training
         """
+
+
+        # tmp_dict = {v: k for k, v in self.source_dictionary.indices.items()}
+        # tmp = []
+
+        # for label in sample['net_input']['src_tokens'][0]:
+        #     tmp.append(tmp_dict[int(label)])
+        # print("".join(list(tmp)))
+
+        # if sample['net_input']['src_tokens'].eq(self.source_dictionary.pad_index).any().item() == True:
+        #     import pdb; pdb.set_trace()
+
+        # import pdb; pdb.set_trace()
+        
+        # print("sample['net_input']['src_tokens'].size()",sample['net_input']['src_tokens'].size())
+        # print("sample['nsentences']",sample['nsentences'])
+        # print("sample['ntokens']",sample['ntokens'])
+        
+
+        '''
+        ====== librispeech with character vocab pdb examples ======
+
+        (Pdb) len(self.source_dictionary); self.source_dictionary.bos_index; 
+        self.source_dictionary.pad_index; self.source_dictionary.eos_index; 
+        self.source_dictionary.unk_index;
+
+        32
+        0
+        1
+        2
+        3
+
+
+        (Pdb) sample.keys()
+        dict_keys(['id', 'nsentences', 'ntokens', 'net_input', 'target'])
+
+        (Pdb) len(sample['net_input']['src_tokens'])
+        4
+
+        # 8 * 512 로 고정?
+        ########################### 1. Transformer (lm) ###########################
+        (Pdb) sample['net_input']['src_tokens'][0]                                                                                            
+        tensor([12,  5, 12,  4,  6, 11,  7,  6,  4, 12,  5,  5, 17,  5, 14,  4, 10, 13,
+                13,  5, 12, 10, 12,  6, 10, 24, 15,  5,  4,  2, 12,  7, 22,  4, 18,  7,
+                9, 12,  6,  4,  6, 11,  8, 16,  4, 19,  8,  8,  4,  7,  9,  8,  6, 11,
+                5, 13,  4, 20,  8, 13,  4,  6, 11, 22,  4, 24, 13, 10, 14,  5,  4, 19,
+                11, 10, 15, 12,  6,  4, 10,  4,  7, 17,  4, 15, 10, 25, 10,  9, 21,  4,
+                5, 25,  5, 13,  4,  9,  5,  7, 13,  4,  6, 11,  5,  5,  4, 12,  6, 10,
+                15, 15,  4,  2, 24,  7,  9, 21,  4, 24,  7,  9, 21,  4, 10,  6,  4, 19,
+                5,  9,  6,  4,  7, 21,  7, 10,  9,  4,  2, 21,  5, 13,  6, 13, 16, 14,
+                5,  4, 10,  4, 12, 11,  7, 15, 15,  4, 24,  5,  4, 25,  5, 13, 22,  4,
+                21, 15,  7, 14,  4,  6,  8,  4, 11,  7, 25,  5,  4, 22,  8, 16,  4, 26,
+                5,  5, 23,  4, 17,  5,  4, 10,  9,  4, 18,  8, 16,  9,  6,  5,  9,  7,
+                9, 18,  5,  4,  2, 10, 15, 15, 16, 12,  6, 13,  7,  6, 10,  8,  9,  4,
+                11,  5,  9, 13, 22,  4, 10, 13, 25, 10,  9, 21,  4,  7, 12,  4, 24,  5,
+                18, 26,  5,  6,  4,  6, 11,  5,  4, 23,  7, 13,  6,  4, 10,  9,  4, 19,
+                11, 10, 18, 11,  4, 10, 13, 25, 10,  9, 21,  4, 17,  7, 14,  5,  4, 11,
+                10, 12,  4, 15,  7, 12,  6,  4,  7, 23, 23,  5,  7, 13,  7,  9, 18,  5,
+                4,  8,  9,  4,  8, 18,  6,  8, 24,  5, 13,  4,  6, 11, 10, 13,  6,  5,
+                5,  9,  6, 11,  4,  9, 10,  9,  5,  6,  5,  5,  9,  4,  8,  4, 20, 10,
+                25,  5,  4,  6, 11,  5,  4,  9, 10, 21, 11,  6,  4,  8, 20,  4, 11, 10,
+                12,  4, 14,  5,  7,  6, 11,  4, 10,  9,  4,  9, 10,  9,  5,  6,  5,  5,
+                9,  4,  8,  4,  6, 19,  8,  4,  8,  9,  4,  6, 11,  5,  4, 15,  7, 12,
+                6,  4, 23, 13,  8, 25, 10,  9, 18, 10,  7, 15,  4,  6,  8, 16, 13,  4,
+                6, 11,  7,  6,  4, 19,  5,  4,  5, 25,  5, 13,  4, 19,  5,  9,  6,  4,
+                6,  8, 21,  5,  6, 11,  5, 13,  4, 11,  5,  4, 19,  7, 12,  4, 10, 15,
+                15,  4,  7, 21,  7, 10,  9,  4, 24, 16,  6,  4, 11,  5,  4, 14, 10, 14,
+                4,  9,  8,  6,  4, 21, 10, 25,  5,  4, 10,  9,  4,  2,  8,  9,  5,  4,
+                17, 10, 21, 11,  6,  4, 11,  7, 25,  5,  4,  7, 15, 15,  4, 12,  8, 13,
+                6, 12,  4,  8, 20,  4, 12, 16, 12, 23, 10, 18, 10,  8,  9, 12,  4, 24,
+                16,  6,  4, 10,  6,  4, 19,  8], device='cuda:0')
+
+        (Pdb) sample['target'][0]  
+        tensor([ 5, 12,  4,  6, 11,  7,  6,  4, 12,  5,  5, 17,  5, 14,  4, 10, 13, 13,
+                5, 12, 10, 12,  6, 10, 24, 15,  5,  4,  2, 12,  7, 22,  4, 18,  7,  9,
+                12,  6,  4,  6, 11,  8, 16,  4, 19,  8,  8,  4,  7,  9,  8,  6, 11,  5,
+                13,  4, 20,  8, 13,  4,  6, 11, 22,  4, 24, 13, 10, 14,  5,  4, 19, 11,
+                10, 15, 12,  6,  4, 10,  4,  7, 17,  4, 15, 10, 25, 10,  9, 21,  4,  5,
+                25,  5, 13,  4,  9,  5,  7, 13,  4,  6, 11,  5,  5,  4, 12,  6, 10, 15,
+                15,  4,  2, 24,  7,  9, 21,  4, 24,  7,  9, 21,  4, 10,  6,  4, 19,  5,
+                9,  6,  4,  7, 21,  7, 10,  9,  4,  2, 21,  5, 13,  6, 13, 16, 14,  5,
+                4, 10,  4, 12, 11,  7, 15, 15,  4, 24,  5,  4, 25,  5, 13, 22,  4, 21,
+                15,  7, 14,  4,  6,  8,  4, 11,  7, 25,  5,  4, 22,  8, 16,  4, 26,  5,
+                5, 23,  4, 17,  5,  4, 10,  9,  4, 18,  8, 16,  9,  6,  5,  9,  7,  9,
+                18,  5,  4,  2, 10, 15, 15, 16, 12,  6, 13,  7,  6, 10,  8,  9,  4, 11,
+                5,  9, 13, 22,  4, 10, 13, 25, 10,  9, 21,  4,  7, 12,  4, 24,  5, 18,
+                26,  5,  6,  4,  6, 11,  5,  4, 23,  7, 13,  6,  4, 10,  9,  4, 19, 11,
+                10, 18, 11,  4, 10, 13, 25, 10,  9, 21,  4, 17,  7, 14,  5,  4, 11, 10,
+                12,  4, 15,  7, 12,  6,  4,  7, 23, 23,  5,  7, 13,  7,  9, 18,  5,  4,
+                8,  9,  4,  8, 18,  6,  8, 24,  5, 13,  4,  6, 11, 10, 13,  6,  5,  5,
+                9,  6, 11,  4,  9, 10,  9,  5,  6,  5,  5,  9,  4,  8,  4, 20, 10, 25,
+                5,  4,  6, 11,  5,  4,  9, 10, 21, 11,  6,  4,  8, 20,  4, 11, 10, 12,
+                4, 14,  5,  7,  6, 11,  4, 10,  9,  4,  9, 10,  9,  5,  6,  5,  5,  9,
+                4,  8,  4,  6, 19,  8,  4,  8,  9,  4,  6, 11,  5,  4, 15,  7, 12,  6,
+                4, 23, 13,  8, 25, 10,  9, 18, 10,  7, 15,  4,  6,  8, 16, 13,  4,  6,
+                11,  7,  6,  4, 19,  5,  4,  5, 25,  5, 13,  4, 19,  5,  9,  6,  4,  6,
+                8, 21,  5,  6, 11,  5, 13,  4, 11,  5,  4, 19,  7, 12,  4, 10, 15, 15,
+                4,  7, 21,  7, 10,  9,  4, 24, 16,  6,  4, 11,  5,  4, 14, 10, 14,  4,
+                9,  8,  6,  4, 21, 10, 25,  5,  4, 10,  9,  4,  2,  8,  9,  5,  4, 17,
+                10, 21, 11,  6,  4, 11,  7, 25,  5,  4,  7, 15, 15,  4, 12,  8, 13,  6,
+                12,  4,  8, 20,  4, 12, 16, 12, 23, 10, 18, 10,  8,  9, 12,  4, 24, 16,
+                6,  4, 10,  6,  4, 19,  8, 16], device='cuda:0')
+        '''
+
+        '''
+        ########################### 2. Transformer XL (truncated bptt lm) ###########################
+
+        # B * seq_len -> 15 * 150
+        (Pdb) sample['net_input']['src_tokens'][0] 
+        tensor([ 4, 11,  7, 14,  4, 14,  8,  9,  5,  4, 10,  6,  4,  7,  6,  4,  9, 10,
+                21, 11,  6,  4, 24, 16,  6,  4, 10,  6,  4, 19,  7, 12,  4,  9,  8,  6,
+                4, 11,  5,  4, 19,  7, 12,  4, 18,  8, 17, 23,  5, 15, 15,  5, 14,  4,
+                6,  8,  4, 13,  5, 17, 10,  9, 14,  4, 11, 10, 17, 12,  5, 15, 20,  4,
+                8,  9,  4,  7,  4,  9, 10, 21, 11,  6,  4, 15, 10, 26,  5,  4,  6, 11,
+                10, 12,  4,  2, 11,  5,  4, 19,  7, 12,  4, 12, 16, 20, 20, 10, 18, 10,
+                5,  9,  6, 15, 22,  4, 16,  9, 15, 10, 26,  5,  4,  7,  9, 22,  6, 11,
+                10,  9, 21,  4,  6, 11,  7,  6,  4, 19,  7, 12,  4,  9,  7,  6, 10, 25,
+                5,  4,  6,  8,  4, 20], device='cuda:0')
+
+        (Pdb) sample['target'][0]                                                                                                             
+        tensor([11,  7, 14,  4, 14,  8,  9,  5,  4, 10,  6,  4,  7,  6,  4,  9, 10, 21,
+                11,  6,  4, 24, 16,  6,  4, 10,  6,  4, 19,  7, 12,  4,  9,  8,  6,  4,
+                11,  5,  4, 19,  7, 12,  4, 18,  8, 17, 23,  5, 15, 15,  5, 14,  4,  6,
+                8,  4, 13,  5, 17, 10,  9, 14,  4, 11, 10, 17, 12,  5, 15, 20,  4,  8,
+                9,  4,  7,  4,  9, 10, 21, 11,  6,  4, 15, 10, 26,  5,  4,  6, 11, 10,
+                12,  4,  2, 11,  5,  4, 19,  7, 12,  4, 12, 16, 20, 20, 10, 18, 10,  5,
+                9,  6, 15, 22,  4, 16,  9, 15, 10, 26,  5,  4,  7,  9, 22,  6, 11, 10,
+                9, 21,  4,  6, 11,  7,  6,  4, 19,  7, 12,  4,  9,  7,  6, 10, 25,  5,
+                4,  6,  8,  4, 20,  1], device='cuda:0')
+
+
+        ########################### 3. BBS loader ###########################
+
+        (Pdb) sample['net_input']['src_tokens'].size()
+        torch.Size([88, 46]) # max token 4096
+
+        (Pdb) sample['net_input']['src_tokens'][-1]
+        tensor([ 2, 10,  4,  7, 12, 26,  5, 14,  4, 20,  8, 13,  4,  9,  8,  6, 11, 10,
+                9, 21,  4, 24,  5,  6,  6,  5, 13,  4,  6, 11,  7,  9,  4,  7,  4, 18,
+                8, 17, 23, 13,  8, 17, 10, 12,  5,  4], device='cuda:0')
+        (Pdb) sample['target'][0]  
+        tensor([10, 27, 17,  4, 29, 16, 12,  6,  4,  7,  4, 18,  8, 16,  9,  6, 13, 22,
+                17,  7,  9,  4,  7,  9, 14,  4, 11,  5, 27, 12,  4,  7,  4, 17, 10, 15,
+                15, 10,  8,  9,  7, 10, 13,  5,  4,  2], device='cuda:0') 
+
+        '''
+
+
         model.train()
         model.set_num_updates(update_num)
         with torch.autograd.profiler.record_function("forward"):
@@ -632,6 +782,22 @@ class FairseqTask(object):
             ).long()
             for src_str in lines
         ]
+        '''
+        (Pdb) self.source_dictionary.encode_line('but good night child')
+        tensor([32, 33, 34, 35,  2], dtype=torch.int32)
+
+        (Pdb) self.source_dictionary.encode_line('BUT GOOD NIGHT CHILD')                                                                                            
+        tensor([36, 37, 38, 39,  2], dtype=torch.int32)
+
+        (Pdb) self.source_dictionary.encode_line('B U T | G O O D | N I G H T | C H I L D')
+        tensor([24, 16,  6,  4, 21,  8,  8, 14,  4,  9, 10, 21, 11,  6,  4, 19, 11, 10,
+                15, 14,  2], dtype=torch.int32)
+
+        (Pdb) self.source_dictionary.encode_line('B U T G O O D N I G H T C H I L D')
+        tensor([24, 16,  6, 21,  8,  8, 14,  9, 10, 21, 11,  6, 19, 11, 10, 15, 14,  2],
+            dtype=torch.int32)
+        '''
+
         lengths = [t.numel() for t in tokens]
         return tokens, lengths
 
@@ -668,7 +834,9 @@ class LegacyFairseqTask(FairseqTask):
         """
         from fairseq import models, quantization_utils
 
+        # import pdb; pdb.set_trace()
         model = models.build_model(args, self, from_checkpoint)
+        # import pdb; pdb.set_trace()
         model = quantization_utils.quantize_model_scalar(model, args)
         return model
 

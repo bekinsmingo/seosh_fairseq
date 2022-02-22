@@ -27,17 +27,43 @@ class Dictionary:
         unk="<unk>",
         extra_special_symbols=None,
     ):
+
+        # fairseq dictionary의 특징으로
+        # padding token, unk token, bos, eos tokens 들이 존재하지 않는다면 포함되는 것 같음 (?)
+
         self.bos_word, self.unk_word, self.pad_word, self.eos_word = bos, unk, pad, eos
         self.symbols = []
         self.count = []
         self.indices = {}
+
         self.bos_index = self.add_symbol(bos)
         self.pad_index = self.add_symbol(pad)
         self.eos_index = self.add_symbol(eos)
         self.unk_index = self.add_symbol(unk)
+
+        '''
+        # 원래 dict.txt는 28개지만 4개가 추가돼서 32개가 될거임.
+        (Pdb) len(self.source_dictionary)
+        32
+
+        # 근데 맨 처음 시작부분에 special tokens을 추가하기 때문에 vocab의 맨 앞부분이 special tokens이 됨.
+        # am vocab이랑 미스매치가 있을 수 밖에 없음.
+
+        (Pdb) self.source_dictionary.bos_index
+        0
+        (Pdb) self.source_dictionary.pad_index
+        1
+        (Pdb) self.source_dictionary.eos_index
+        2
+        (Pdb) self.source_dictionary.unk_index
+        3
+        '''
+
         if extra_special_symbols:
             for s in extra_special_symbols:
                 self.add_symbol(s)
+        
+
         self.nspecial = len(self.symbols)
 
     def __eq__(self, other):
@@ -222,8 +248,49 @@ class Dictionary:
         ...
         ```
         """
+
+        # 위에서도 설명했듯이
+        # Dictionary는 Adaptive Softmax 때문에 아래처럼 되어있어야함.
+
+        '''
+        .
+        |-- fairseq_char_data
+        |   |-- dict.txt
+        |   |-- preprocess.log
+        |   |-- test.bin
+        |   |-- test.idx
+        |   |-- train.bin
+        |   |-- train.idx
+        |   |-- valid.bin
+        |   `-- valid.idx
+
+        | 803288729
+        E 439294199
+        T 319071758
+        A 277306732
+        O 263784364
+        N 239361162
+        I 237353011
+        ...
+        B 52538531
+        V 33250231
+        K 26906609
+        ' 9162896
+        X 5075632
+        J 4746771
+        Q 3401794
+        Z 2186971
+
+        '''
+
+        # 즉 빈도수가 반영되어있어야 하는 것임
+
         d = cls()
         d.add_from_file(f)
+
+        # import pdb
+        # pdb.set_trace()
+
         return d
 
     def add_from_file(self, f):
@@ -247,16 +314,26 @@ class Dictionary:
         lines = f.readlines()
         indices_start_line = self._load_meta(lines)
 
+        # import pdb
+        # pdb.set_trace()
+
         for line in lines[indices_start_line:]:
             try:
-                line, field = line.rstrip().rsplit(" ", 1)
+                if '\t' in line:
+                    line, field = line.rstrip().rsplit("\t",1)
+                else:
+                    line, field = line.rstrip().rsplit(" ", 1)
                 if field == "#fairseq:overwrite":
                     overwrite = True
                     line, field = line.rsplit(" ", 1)
                 else:
                     overwrite = False
+                if not isinstance(field, int):
+                    field = 0
                 count = int(field)
                 word = line
+                if word in ['<unk>','<s>','</s>','<pad>']:
+                    continue
                 if word in self and not overwrite:
                     raise RuntimeError(
                         "Duplicate word found when loading Dictionary: '{}'. "
@@ -270,6 +347,9 @@ class Dictionary:
                 raise ValueError(
                     f"Incorrect dictionary format, expected '<token> <cnt> [flags]': \"{line}\""
                 )
+
+        # import pdb
+        # pdb.set_trace()
 
     def _save(self, f, kv_iterator):
         if isinstance(f, str):

@@ -101,6 +101,37 @@ class AudioFinetuningConfig(AudioPretrainingConfig):
         },
     )
 
+    # ## added for xlsr
+    # multiple_train_files: bool = field(
+    #     default=False,
+    #     metadata={
+    #         "help": "tmp",
+    #     },
+    # )
+    # shuffle_by_bucket: bool = field(
+    #     default=False,
+    #     metadata={
+    #         "help": "tmp",
+    #     },
+    # )
+    # shuffle_by_bucket_size: bool = field(
+    #     default=False,
+    #     metadata={
+    #         "help": "tmp",
+    #     },
+    # )
+    # mask_length: bool = field(
+    #     default=False,
+    #     metadata={
+    #         "help": "tmp",
+    #     },
+    # )
+    # mask_prob: float = field(
+    #     default=0.5,
+    #     metadata={
+    #         "help": "tmp",
+    #     },
+    # )
 
 @register_task("audio_finetuning", dataclass=AudioFinetuningConfig)
 class AudioFinetuningTask(AudioPretrainingTask):
@@ -120,6 +151,12 @@ class AudioFinetuningTask(AudioPretrainingTask):
     def load_target_dictionary(self):
         if self.cfg.labels:
             dict_path = os.path.join(self.cfg.data, f"dict.{self.cfg.labels}.txt")
+            # import pdb
+            # pdb.set_trace()
+            # '''
+            # (Pdb) len(Dictionary.load(dict_path))
+            # 32
+            # '''
             return Dictionary.load(dict_path)
         return None
 
@@ -219,6 +256,8 @@ class AudioFinetuningTask(AudioPretrainingTask):
 
     def _inference_with_wer(self, generator, sample, model):
         import editdistance
+
+        # import pdb; pdb.set_trace()
 
         def decode(toks):
             s = self.target_dictionary.string(

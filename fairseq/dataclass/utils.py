@@ -487,6 +487,27 @@ def merge_with_parent(dc: FairseqDataclass, cfg: DictConfig, remove_missing=Fals
                 if k not in target_keys:
                     del cfg[k]
 
+    # import pdb; pdb.set_trace()
+    ## xlsr-ctc
+    '''
+    (Pdb) dc
+    <class 'fairseq.models.wav2vec.wav2vec2_asr.Wav2Vec2CtcConfig'>
+
+    (Pdb) dc.__dataclass_fields__.keys()
+    dict_keys(['_name', 'w2v_path', 'no_pretrained_weights', 'dropout_input', 'final_dropout', 'dropout', 
+    'attention_dropout', 'activation_dropout', 'conv_feature_layers', 'encoder_embed_dim', 'apply_mask', 
+    'mask_length', 'mask_prob', 'mask_selection', 'mask_other', 'no_mask_overlap', 'mask_min_space', 
+    'require_same_masks', 'mask_dropout', 'mask_channel_length', 'mask_channel_prob', 'mask_channel_selection', 
+    'mask_channel_other', 'no_mask_channel_overlap', 'freeze_finetune_updates', 'feature_grad_mult', 'layerdrop', 
+    'mask_channel_min_space', 'mask_channel_before', 'normalize', 'data', 'w2v_args', 'checkpoint_activations', 
+    'offload_activations', 'min_params_to_wrap', 'ddp_backend', 'blank_weight', 'blank_mode'])
+
+    (Pdb) cfg
+    {'_name': 'wav2vec_ctc', 'w2v_path': '/workspace/s2st/xlsr/xlsr2_960m_1000k.pt', 'apply_mask': True, 
+    'mask_prob': 0.75, 'mask_channel_prob': 0.25, 'mask_channel_length': 64, 'layerdrop': 0.1, 
+    'activation_dropout': 0.1, 'feature_grad_mult': 0.0, 'freeze_finetune_updates': 10000, 'checkpoint_activations': False}
+    '''
+
     merged_cfg = OmegaConf.merge(dc, cfg)
     merged_cfg.__dict__["_parent"] = cfg.__dict__["_parent"]
     OmegaConf.set_struct(merged_cfg, True)

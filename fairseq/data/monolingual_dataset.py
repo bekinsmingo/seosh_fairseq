@@ -79,6 +79,7 @@ class MonolingualDataset(FairseqDataset):
         shuffle=False,
         targets=None,
         add_bos_token=False,
+        first_source_token_bos=False,
         fixed_pad_length=None,
         pad_to_bsz=None,
         src_lang_idx=None,
@@ -91,6 +92,7 @@ class MonolingualDataset(FairseqDataset):
         self.add_eos_for_other_targets = add_eos_for_other_targets
         self.shuffle = shuffle
         self.add_bos_token = add_bos_token
+        self.first_source_token_bos=first_source_token_bos
         self.fixed_pad_length = fixed_pad_length
         self.pad_to_bsz = pad_to_bsz
         self.src_lang_idx = src_lang_idx
@@ -104,6 +106,7 @@ class MonolingualDataset(FairseqDataset):
         self.targets = targets
 
     def __getitem__(self, index):
+
         if self.targets is not None:
             # *future_target* is the original sentence
             # *source* is shifted right by 1 (maybe left-padded with eos)
@@ -114,13 +117,31 @@ class MonolingualDataset(FairseqDataset):
             # Right-to-left language models should condition on *source* and
             # predict *past_target*.
             source, future_target, past_target = self.dataset[index]
+            # source = self._maybe_add_bos_initially(source)
+
+            # import pdb
+            # pdb.set_trace()
+
             source, target = self._make_source_target(
                 source, future_target, past_target
             )
         else:
             source = self.dataset[index]
+            # source = self._maybe_add_bos_initially(source)
             target = None
-        source, target = self._maybe_add_bos(source, target)
+
+        # import pdb
+        # pdb.set_trace()
+
+        if self.first_source_token_bos:
+            source[0]=self.vocab.bos()
+
+        ## for test
+        # source = torch.cat([source.new([self.vocab.bos()]*10),source])
+        # source = torch.cat([source.new([1,2,3,4,5,6,7]),source])
+
+        # source, target = self._maybe_add_bos(source, target)
+
         return {"id": index, "source": source, "target": target}
 
     def __len__(self):
@@ -170,6 +191,11 @@ class MonolingualDataset(FairseqDataset):
 
         return source, self._filter_vocab(target)
 
+    def _maybe_add_bos_initially(self, source):
+        if self.add_bos_token:
+            source = torch.cat([source.new([self.vocab.bos()]), source])
+        return source
+
     def _maybe_add_bos(self, source, target):
         if self.add_bos_token:
             source = torch.cat([source.new([self.vocab.bos()]), source])
@@ -217,6 +243,17 @@ class MonolingualDataset(FairseqDataset):
                   target sentence of shape `(bsz, tgt_len)`. Padding will appear
                   on the right.
         """
+
+        # import pdb
+        # pdb.set_trace()
+
+        '''
+        (Pdb) len(samples)
+        2496
+        (Pdb) samples[1000]
+        {'id': 4843019, 'source': tensor([ 0,  2,  7,  9, 12,  4]), 'target': tensor([ 0,  7,  9, 12,  4,  2])}
+        '''
+
         return collate(
             samples,
             self.vocab.pad(),

@@ -1,0 +1,20 @@
+WER: 4.28476093271571
+err / num_ref_words = 2183 / 50948
+
+_name: null
+nbest: 1
+unitlm: true
+lmpath: /mnt/clova_speech/users/seosh/fairseq_lm/librispeech_12layer_transformer_xl_char_lm_model_bbs_bos/checkpoint_best.pt
+lexicon: null
+beam: 10
+beamthreshold: 10.0
+beamsizetoken: 100
+wordscore: 2.007453215950754
+unkweight: -.inf
+silweight: -1.486608728025944
+lmweight: 0.17877095264164722
+rescoring: false
+rescoringweight: 2.0
+type: fairseqlm
+unique_wer_file: false
+results_path: null

@@ -260,6 +260,8 @@ class Wav2VecEncoderWithAdaptor(FairseqEncoder):
 
     def __init__(self, args):
         super().__init__(None)
+        # print('args.task',args.task)
+        # import pdb;pdb.set_trace()
         self.w2v_encoder = Wav2VecEncoder(args)
         self.is_v0_arch = not args.adaptor_proj
         self.w2v_proj_ln = None
@@ -507,7 +509,13 @@ class XMTransformerModel(FairseqEncoderDecoderModel):
     @classmethod
     def build_encoder(cls, args):
         _args = copy.deepcopy(args)
+        # import pdb;pdb.set_trace()
         if not args.adaptor_proj:  # V0 arch
+            # print('args.w2v_path',args.w2v_path)
+            # setattr(args,'w2v_path','/workspace/s2st/xlsr/xlsr2_300m.pt')
+            # print('args.w2v_path',args.w2v_path)
+            # import pdb;pdb.set_trace()
+            
             state = checkpoint_utils.load_checkpoint_to_cpu(args.w2v_path)
             if state.get("cfg") is not None:
                 encoder_embed_dim = state["cfg"]._content["model"]["encoder_embed_dim"]
@@ -558,9 +566,12 @@ class XMTransformerModel(FairseqEncoderDecoderModel):
             task.target_dictionary, args.decoder_embed_dim
         )
 
+        # import pdb; pdb.set_trace()
+
         encoder = cls.build_encoder(args)
         decoder = cls.build_decoder(args, task, decoder_embed_tokens)
-        return cls(encoder, decoder)
+        model = cls(encoder, decoder)
+        return model
 
     def get_normalized_probs(
         self,

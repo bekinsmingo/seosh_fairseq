@@ -77,6 +77,10 @@ def get_features_or_waveform(path: str, need_waveform=False, use_sample_rate=Non
     Returns:
         features_or_waveform (numpy.ndarray): speech features or waveform.
     """
+    
+    #import pdb
+    #pdb.set_trace()
+
     _path, slice_ptr = parse_path(path)
     if len(slice_ptr) == 0:
         if need_waveform:

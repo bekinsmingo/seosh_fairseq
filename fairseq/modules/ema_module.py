@@ -38,8 +38,8 @@ class EMAModule:
         """
 
         self.decay = config.ema_decay
-        self.model = copy.deepcopy(model)
-        self.model.requires_grad_(False)
+        self.model = copy.deepcopy(model) # 모델을 deepcopy함
+        self.model.requires_grad_(False) # ema는 업데이트 안하니까 gradient graph 필요없음.
         self.config = config
         self.skip_keys = skip_keys or set()
         self.fp32_params = {}

@@ -100,6 +100,8 @@ class InferenceProcessor:
         self.cfg = cfg
         self.task = tasks.setup_task(cfg.task)
 
+        # import pdb; pdb.set_trace()
+
         models, saved_cfg = self.load_model_ensemble()
         self.models = models
         self.saved_cfg = saved_cfg
@@ -122,6 +124,22 @@ class InferenceProcessor:
         self.ref_units_file = None
 
         self.progress_bar = self.build_progress_bar()
+
+        self.rescoring = cfg.decoding.rescoring
+        self.rescoring_weight = cfg.decoding.rescoringweight
+
+        if self.rescoring:
+            device = 'cuda'
+            model_name = "gpt2"
+            # model_name = "gpt2-large"
+            from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForCausalLM, AutoTokenizer
+            self.rescoring_model = (
+                AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, is_decoder=True)
+                .to(device)
+                .eval()
+            )
+            self.rescoring_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.rescoring_tokenizer.pad_token = self.rescoring_tokenizer.eos_token
 
     def __enter__(self) -> "InferenceProcessor":
         if self.cfg.decoding.results_path is not None:
@@ -279,11 +297,17 @@ class InferenceProcessor:
             hyp_words = " ".join(hypo["words"])
         else:
             hyp_words = post_process(hyp_pieces, self.cfg.common_eval.post_process)
+        
+        # upper; necessary for LM traind with lower word 
+        hyp_words = hyp_words.upper()
 
         # Processes target.
         target_tokens = utils.strip_pad(toks, self.tgt_dict.pad())
         tgt_pieces = self.tgt_dict.string(target_tokens.int().cpu())
         tgt_words = post_process(tgt_pieces, self.cfg.common_eval.post_process)
+
+        # upper; necessary for LM traind with lower word 
+        tgt_words = tgt_words.upper()
 
         if self.cfg.decoding.results_path is not None:
             print(f"{hyp_pieces} ({speaker}-{sid})", file=self.hypo_units_file)
@@ -293,7 +317,7 @@ class InferenceProcessor:
 
         if not self.cfg.common_eval.quiet:
             logger.info(f"HYPO: {hyp_words}")
-            logger.info(f"REF: {tgt_words}")
+            logger.info(f"REF : {tgt_words}")
             logger.info("---------------------")
 
         hyp_words, tgt_words = hyp_words.split(), tgt_words.split()
@@ -307,6 +331,43 @@ class InferenceProcessor:
             models=self.models,
             sample=sample,
         )
+
+        if self.rescoring:
+            reordered_hypos = []
+            for nbest_hypos in hypos:
+                inputs = []
+                beams = []
+                for hypo in nbest_hypos:
+                    inputs.append(' '.join(hypo['words']))
+                encoded = self.rescoring_tokenizer(inputs, return_tensors='pt', padding=True, truncation=True)['input_ids'].to(self.rescoring_model.device)
+                inputs_mask = (encoded != self.rescoring_tokenizer.pad_token_id)
+
+                with torch.no_grad():
+                    output = self.rescoring_model(input_ids=encoded, attention_mask=inputs_mask)
+                    log_probs = torch.nn.functional.log_softmax(output.logits, dim=-1)
+                    target_log_probs = log_probs[:, :-1].gather(2, encoded[:, 1:].unsqueeze(2)).squeeze(2)
+                    neural_lm_score = torch.sum(target_log_probs * inputs_mask[:, 1:], dim=-1)
+                    rescored_results=(neural_lm_score)
+
+                for hypo, rescored_result in zip(nbest_hypos, rescored_results):
+                    beams.append({
+                        "tokens":hypo['tokens'], 
+                        "score" : hypo['score'], 
+                        "timesteps" : hypo['timesteps'], 
+                        "words" : hypo['words'], 
+                        "rescoring" : rescored_result,
+                        "total_score" : hypo['score'] + self.rescoring_weight * rescored_result
+                        })
+
+                # Original Rescoring log P_{AM} (y|x) + \alpha1 log P_{LM1}(y) + \beta |y| + \alpha2 log P_{LM2}(y)
+                # on the fly
+                sorted_beams = sorted(beams, reverse=True, key=lambda x:x['total_score'])
+                reordered_hypos.append(sorted_beams)
+            hypos = reordered_hypos
+
+        # import pdb
+        # pdb.set_trace()
+
         num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
         self.gen_timer.stop(num_generated_tokens)
         self.wps_meter.update(num_generated_tokens)
@@ -379,6 +440,8 @@ def main(cfg: InferConfig) -> float:
         raise ValueError("CUDA not found; set `cpu=True` to run without CUDA")
 
     logger.info(cfg.common_eval.path)
+    # import pdb; pdb.set_trace()
+
 
     with InferenceProcessor(cfg) as processor:
         for sample in processor:
@@ -421,6 +484,8 @@ def hydra_main(cfg: InferConfig) -> Union[float, Tuple[float, Optional[float]]]:
 
     if cfg.common.reset_logging:
         reset_logging()
+    
+    # import pdb;pdb.set_trace()
 
     utils.import_user_module(cfg.common)
 

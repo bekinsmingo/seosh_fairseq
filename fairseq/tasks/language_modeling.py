@@ -53,8 +53,12 @@ class LanguageModelingConfig(FairseqDataclass):
             'If set to "eos", includes only one sentence per sample.'
         },
     )
-    tokens_per_sample: int = field(
-        default=1024,
+    # tokens_per_sample: int = field(
+    #     default=1024,
+    #     metadata={"help": "max number of tokens per sample for LM dataset"},
+    # )
+    tokens_per_sample: Optional[int] = field(
+        default=None,
         metadata={"help": "max number of tokens per sample for LM dataset"},
     )
     output_dictionary_size: int = field(
@@ -67,6 +71,9 @@ class LanguageModelingConfig(FairseqDataclass):
     past_target: bool = field(default=False, metadata={"help": "include past target"})
     add_bos_token: bool = field(
         default=False, metadata={"help": "prepend beginning of sentence token (<s>)"}
+    )
+    first_source_token_bos: bool = field(
+        default=False, metadata={"help": "let first source token (<s>)"}
     )
     max_target_positions: Optional[int] = field(
         default=None, metadata={"help": "max number of tokens in the target sequence"}
@@ -138,6 +145,10 @@ class LanguageModelingTask(LegacyFairseqTask):
 
     def __init__(self, args, dictionary, output_dictionary=None, targets=None):
         super().__init__(args)
+
+        # import pdb
+        # pdb.set_trace()
+
         self.dictionary = dictionary
         self.output_dictionary = output_dictionary or dictionary
 
@@ -152,7 +163,28 @@ class LanguageModelingTask(LegacyFairseqTask):
         if args.data:
             paths = utils.split_paths(args.data)
             assert len(paths) > 0
+
             dictionary = Dictionary.load(os.path.join(paths[0], "dict.txt"))
+
+            # import pdb
+            # pdb.set_trace()
+
+            # 여기가 키포인트
+            # 아래처럼 dict.txt가 꼭 포함되어 있어야함.
+
+            '''
+            .
+            |-- fairseq_char_data
+            |   |-- dict.txt
+            |   |-- preprocess.log
+            |   |-- test.bin
+            |   |-- test.idx
+            |   |-- train.bin
+            |   |-- train.idx
+            |   |-- valid.bin
+            |   `-- valid.idx
+            '''
+
             logger.info("dictionary: {} types".format(len(dictionary)))
             output_dictionary = dictionary
             if args.output_dictionary_size >= 0:
@@ -188,7 +220,23 @@ class LanguageModelingTask(LegacyFairseqTask):
         return cls(args, dictionary, output_dictionary, targets=targets)
 
     def build_model(self, args, from_checkpoint=False):
+
+        # import pdb
+        # pdb.set_trace()
+
+        '''
+        (Pdb) args
+        self = <fairseq.tasks.language_modeling.LanguageModelingTask object at 0x7f506beab6a0>
+        args = {'_name': 'transformer_xl', 'cutoffs': [20000, 40000, 200000], 
+        'd_model': 410, 'n_head': 10, 'd_head': 41, 'd_inner': 2100, 
+        'div_val': 1, 'n_layer': 12, 'mem_len': 0, 'clamp_len': -1, 
+        'same_length': False, 'dropout': 0.1, 'dropatt': 0.0, 
+        'checkpoint_activations': False, 'offload_activations': False, 
+        'max_target_positions': 1024}
+        '''
+
         model = super().build_model(args, from_checkpoint)
+
         for target in self.targets:
             if target not in model.supported_targets:
                 raise ValueError(
@@ -226,13 +274,17 @@ class LanguageModelingTask(LegacyFairseqTask):
             self.args.tokens_per_sample,
             self.args.seed,
         )
+
+        # import pdb
+        # pdb.set_trace()
+
         dataset = TokenBlockDataset(
             dataset,
             dataset.sizes,
-            self.args.tokens_per_sample,
+            self.args.tokens_per_sample, # block_size -> 512개 담을거냐? -> None
             pad=self.dictionary.pad(),
             eos=self.dictionary.eos(),
-            break_mode=self.args.sample_break_mode,
+            break_mode=self.args.sample_break_mode, # eos 여야
             include_targets=True,
             use_plasma_view=self.args.use_plasma_view,
             split_path=split_path,
@@ -262,9 +314,13 @@ class LanguageModelingTask(LegacyFairseqTask):
             shuffle=True,
             targets=self.targets,
             add_bos_token=self.args.add_bos_token,
+            first_source_token_bos=self.args.first_source_token_bos,
             fixed_pad_length=fixed_pad_length,
             pad_to_bsz=pad_to_bsz,
         )
+
+        # import pdb
+        # pdb.set_trace()
 
     def build_dataset_for_inference(self, src_tokens, src_lengths, **kwargs):
         """

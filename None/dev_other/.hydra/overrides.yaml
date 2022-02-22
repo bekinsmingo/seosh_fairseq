@@ -1,0 +1,16 @@
+- decoding.lmweight=0.2855569016533901
+- decoding.wordscore=-2.508438592326966
+- decoding.silweight=-0.44677176421313547
+- common.user_dir=/workspace/fairseq/examples/truncated_bptt
+- task=audio_finetuning
+- task.data=/workspace/librispeech_model/am/fairseq_audio_data2
+- task.labels=ltr
+- common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
+- decoding.type=fairseqlm
+- decoding.unitlm=True
+- decoding.lmpath=/mnt/clova_speech/users/seosh/fairseq_lm/librispeech_12layer_transformer_xl_char_lm_model_bbs_bos/checkpoint_best.pt
+- decoding.beam=10
+- decoding.beamthreshold=10
+- decoding.beamsizetoken=100
+- dataset.gen_subset=dev_other
+- dataset.batch_size=32

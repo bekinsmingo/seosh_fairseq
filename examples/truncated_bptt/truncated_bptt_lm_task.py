@@ -68,6 +68,7 @@ class TruncatedBPTTLMTask(FairseqTask):
         # support sharded datasets
         paths = utils.split_paths(self.cfg.data)
         assert len(paths) > 0
+        
         data_path = paths[(epoch - 1) % len(paths)]
         split_path = os.path.join(data_path, split)
 

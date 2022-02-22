@@ -205,6 +205,26 @@ class Wav2VecCtc(BaseFairseqModel):
     @classmethod
     def build_model(cls, cfg: Wav2Vec2CtcConfig, task: FairseqTask):
         """Build a new model instance."""
+        # import pdb; pdb.set_trace()
+        ## 왜 xlsr-ctc 하는데 여기서 터지니
+        '''
+        (Pdb) len(task.target_dictionary)
+        32
+
+        (Pdb) task
+        <fairseq.tasks.audio_finetuning.AudioFinetuningTask object at 0x7fcb576fa9d0>
+
+        (Pdb) cfg
+        {'_name': 'wav2vec_ctc', 'w2v_path': '/workspace/s2st/xlsr/xlsr2_960m_1000k.pt', 'no_pretrained_weights': False, 
+        'dropout_input': 0.0, 'final_dropout': 0.0, 'dropout': 0.0, 'attention_dropout': 0.0, 'activation_dropout': 0.1, 
+        'conv_feature_layers': '[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512,2,2)] + [(512,2,2)]', 'encoder_embed_dim': 768, 
+        'apply_mask': True, 'mask_length': 10, 'mask_prob': 0.75, 'mask_selection': static, 'mask_other': 0.0, 'no_mask_overlap': False, 
+        'mask_min_space': 1, 'require_same_masks': True, 'mask_dropout': 0.0, 'mask_channel_length': 64, 'mask_channel_prob': 0.25, 
+        'mask_channel_selection': static, 'mask_channel_other': 0.0, 'no_mask_channel_overlap': False, 'freeze_finetune_updates': 10000, 
+        'feature_grad_mult': 0.0, 'layerdrop': 0.1, 'mask_channel_min_space': 1, 'mask_channel_before': False, 'normalize': True, 
+        'data': '/workspace/librispeech_model/am/fairseq_audio_data2', 'w2v_args': None, 'checkpoint_activations': False, 
+        'offload_activations': False, 'min_params_to_wrap': 100000000, 'ddp_backend': 'legacy_ddp', 'blank_weight': 0.0, 'blank_mode': 'add'}
+        '''
         w2v_encoder = Wav2VecEncoder(cfg, len(task.target_dictionary))
         return cls(cfg, w2v_encoder)
 
@@ -311,6 +331,8 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
             cfg.autoregressive
         ), "Please set task.autoregressive=true for seq2seq asr models"
 
+        # import pdb; pdb.set_trace()
+
         src_dict, tgt_dict = task.source_dictionary, task.target_dictionary
 
         def build_embedding(dictionary, embed_dim):
@@ -320,6 +342,8 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
             return emb
 
         decoder_embed_tokens = build_embedding(tgt_dict, cfg.decoder_embed_dim)
+
+        # import pdb; pdb.set_trace()
 
         encoder = cls.build_encoder(cfg)
         decoder = cls.build_decoder(cfg, tgt_dict, decoder_embed_tokens)
@@ -372,6 +396,7 @@ class Wav2VecEncoder(FairseqEncoder):
             "offload_activations": cfg.offload_activations,
             "min_params_to_wrap": cfg.min_params_to_wrap,
         }
+        # import pdb; pdb.set_trace()
 
         if cfg.w2v_args is None:
             state = checkpoint_utils.load_checkpoint_to_cpu(cfg.w2v_path, arg_overrides)
@@ -381,6 +406,7 @@ class Wav2VecEncoder(FairseqEncoder):
             w2v_args.criterion = None
             w2v_args.lr_scheduler = None
             cfg.w2v_args = w2v_args
+            # import pdb; pdb.set_trace()
 
             logger.info(w2v_args)
 
@@ -389,6 +415,8 @@ class Wav2VecEncoder(FairseqEncoder):
             w2v_args = cfg.w2v_args
             if isinstance(w2v_args, Namespace):
                 cfg.w2v_args = w2v_args = convert_namespace_to_omegaconf(w2v_args)
+
+        # import pdb; pdb.set_trace()
 
         model_normalized = w2v_args.task.get(
             "normalize", w2v_args.model.get("normalize", False)
@@ -402,7 +430,10 @@ class Wav2VecEncoder(FairseqEncoder):
             with open_dict(w2v_args):
                 w2v_args.model.checkpoint_activations = cfg.checkpoint_activations
 
-        w2v_args.task.data = cfg.data
+        # w2v_args.task.data = cfg.data
+        # if 'eval_wer' in w2v_args.task.keys():
+        #     w2v_args.task._name = 'audio_finetuning'
+        # import pdb; pdb.set_trace()
         task = tasks.setup_task(w2v_args.task)
         model = task.build_model(w2v_args.model, from_checkpoint=True)
 

@@ -8,7 +8,7 @@ hydra:
   run:
     dir: ${common_eval.results_path}/${dataset.gen_subset}
   sweep:
-    dir: /checkpoint/${env:USER}/${env:PREFIX}/${common_eval.results_path}
+    dir: ${common_eval.results_path}
     subdir: ${dataset.gen_subset}
 common_eval:
   results_path: null
