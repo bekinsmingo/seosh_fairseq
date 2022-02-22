@@ -84,11 +84,6 @@ root@ae753a5ee1a0:/workspace/seosh_fairseq#
 
 * example run using fairseq
 
-```bash
-cd $FAIRSEQ_ROOT/tests &&\
-python3 test_roberta.py
-```
-
 ```
 root@ae753a5ee1a0:/workspace/fairseq/tests# python3 test_roberta.py
 2022-02-22 09:17:33 | INFO | fairseq.tasks.text_to_speech | Please install tensorboardX: pip install tensorboardX
