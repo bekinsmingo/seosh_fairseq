@@ -76,9 +76,10 @@ root@ae753a5ee1a0:/usr/local/lib/python3.8/dist-packages# cat /usr/local/lib/pyt
 ```
 
 ```bash
-root@ae753a5ee1a0:/# python3 -c "import fairseq; from fairseq.models.transformer_lm import TransformerLanguageModel;"
-2022-02-22 09:19:02 | INFO | fairseq.tasks.text_to_speech | Please install tensorboardX: pip install tensorboardX
-root@ae753a5ee1a0:/# 
+root@ae753a5ee1a0:/workspace/seosh_fairseq# python3 -c "import fairseq; from fairseq.models.transformer_lm import TransformerLanguageModel; print(TransformerLanguageModel)"
+2022-02-22 09:54:16 | INFO | fairseq.tasks.text_to_speech | Please install tensorboardX: pip install tensorboardX
+<class 'fairseq.models.transformer_lm.TransformerLanguageModel'>
+root@ae753a5ee1a0:/workspace/seosh_fairseq# 
 ```
 
 * example run using fairseq
