@@ -5,10 +5,36 @@
 * [PyTorch](http://pytorch.org/) version >= 1.5.0
 * Python version >= 3.6
 * For training new models, you'll also need an NVIDIA GPU and [NCCL](https://github.com/NVIDIA/nccl)
-* **To install fairseq** and develop locally:
+
+* check pytorch version
+
+```bash
+root@b96a5cf449f7:/workspace# python -c "import torch; print(torch.__version__); print(torch.cuda.is_available());"
+1.9.0+cu111
+True
+```
+
+* in detail
+
+```python
+import torch
+import apex
+
+print('cuda availability ? {}'.format(torch.cuda.is_available()))
+print('total gpu nums : {}'.format(torch.cuda.device_count()))
+print('cudnn backends version : {}'.format(torch.backends.cudnn.version()))
+print('cuda version : {}'.format(torch.version.cuda))
+
+print('*'*30)
+
+for n in range(torch.cuda.device_count()):
+ print('{}th GPU name is {}'.format(n,torch.cuda.get_device_name(n)))
+ print('\t capability of this GPU is {}'.format(torch.cuda.get_device_capability(n)))
+```
 
 
-## 2. Fairseq
+
+## 2. Fairseq (To install fairseq** and develop locally)
 
 ``` bash
 git clone https://github.com/pytorch/fairseq
