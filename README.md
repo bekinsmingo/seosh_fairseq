@@ -63,15 +63,41 @@ cuda version : 11.1
 ## 2. Fairseq (To install fairseq** and develop locally)
 
 ``` bash
-git clone https://github.com/pytorch/fairseq
-cd fairseq
+git clone https://github.com/pytorch/seosh_fairseq
+cd seosh_fairseq
 pip install --editable ./
+```
 
-# on MacOS:
-# CFLAGS="-stdlib=libc++" pip install --editable ./
+* check
 
-# to install the latest stable release (0.10.x)
-# pip install fairseq
+```bash
+python3 -c "import fairseq; from fairseq.examples.speech_recognition.w2l_decoder import W2lDecoder;"
+```
+
+* if u got error like this...
+
+```python
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/workspace/fairseq/examples/speech_recognition/__init__.py", line 1, in <module>
+    from . import criterions, models, tasks  # noqa
+  File "/workspace/fairseq/examples/speech_recognition/criterions/__init__.py", line 15, in <module>
+    importlib.import_module(
+  File "/usr/lib/python3.8/importlib/__init__.py", line 127, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+ModuleNotFoundError: No module named 'examples'
+```
+
+```bash
+cd $FAIRSEQ_ROOT &&\
+python setup.py build develop
+```
+
+* example run using fairseq
+
+```bash
+cd $FAIRSEQ_ROOT/tests/speech &&\
+python3 test_wav2vec2.py
 ```
 
 ## 3. Apex (cuda major capability<7 (e.g. p40) 인 경우 fp16이 효과가 없을 수 있음)
@@ -116,3 +142,11 @@ pip install datasets
 * [Translation](examples/translation/README.md): convolutional and transformer models are available
 * [Language Modeling](examples/language_model/README.md): convolutional and transformer models are available
 
+
+```
+docker run --gpus all -it --name tmp \
+-v /home1/irteam/users/seosh/decoder_pratice:/workspace \
+-v /mnt/clova_speech:/mnt/clova_speech \
+--shm-size=8g --ulimit memlock=-1 --ulimit stack=67108864 \
+--device=/dev/snd flml/flashlight:cuda-latest
+```
