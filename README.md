@@ -70,11 +70,10 @@ cuda version : 11.1
 
 * check fairseq installation
 
-```bash
-python3 -c "import fairseq; from fairseq.models.transformer_lm import TransformerLanguageModel;"
 ```
-
-* if u got error like this...
+root@ae753a5ee1a0:/usr/local/lib/python3.8/dist-packages# cat /usr/local/lib/python3.8/dist-packages/fairseq.egg-link 
+/workspace/seosh_fairseq
+```
 
 ```bash
 root@ae753a5ee1a0:/# python3 -c "import fairseq; from fairseq.models.transformer_lm import TransformerLanguageModel;"
