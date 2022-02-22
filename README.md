@@ -57,7 +57,7 @@ pip install datasets
 
 # Official Fairseq Doc
 
-[full documentation](https://fairseq.readthedocs.io/) 
+* [full documentation](https://fairseq.readthedocs.io/) 
 
 # Pre-trained models and examples
 
