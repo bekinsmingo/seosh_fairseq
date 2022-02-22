@@ -32,6 +32,32 @@ for n in range(torch.cuda.device_count()):
  print('\t capability of this GPU is {}'.format(torch.cuda.get_device_capability(n)))
 ```
 
+* in my case
+
+```python
+cuda availability ? True
+total gpu nums : 8
+cudnn backends version : 8005
+cuda version : 11.1
+******************************
+0th GPU name is Tesla P40
+         capability of this GPU is (6, 1)
+1th GPU name is Tesla P40
+         capability of this GPU is (6, 1)
+2th GPU name is Tesla P40
+         capability of this GPU is (6, 1)
+3th GPU name is Tesla P40
+         capability of this GPU is (6, 1)
+4th GPU name is Tesla P40
+         capability of this GPU is (6, 1)
+5th GPU name is Tesla P40
+         capability of this GPU is (6, 1)
+6th GPU name is Tesla P40
+         capability of this GPU is (6, 1)
+7th GPU name is Tesla P40
+         capability of this GPU is (6, 1)
+```
+
 
 
 ## 2. Fairseq (To install fairseq** and develop locally)
