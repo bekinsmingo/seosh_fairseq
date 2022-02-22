@@ -8,7 +8,7 @@
 
 
 
-## 2. Fairseq (To install fairseq** and develop locally)
+## 2. Fairseq (To install fairseq and develop locally)
 
 ``` bash
 git clone https://github.com/pytorch/seosh_fairseq
@@ -138,11 +138,3 @@ pip install datasets
 * [Translation](examples/translation/README.md): convolutional and transformer models are available
 * [Language Modeling](examples/language_model/README.md): convolutional and transformer models are available
 
-
-```
-docker run --gpus all -it --name tmp \
--v /home1/irteam/users/seosh/decoder_pratice:/workspace \
--v /mnt/clova_speech:/mnt/clova_speech \
---shm-size=8g --ulimit memlock=-1 --ulimit stack=67108864 \
---device=/dev/snd flml/flashlight:cuda-latest
-```
