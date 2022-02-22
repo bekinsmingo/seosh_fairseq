@@ -6,6 +6,16 @@
 * Python version >= 3.6
 * For training new models, you'll also need an NVIDIA GPU and [NCCL](https://github.com/NVIDIA/nccl)
 
+
+
+## 2. Fairseq (To install fairseq** and develop locally)
+
+``` bash
+git clone https://github.com/pytorch/seosh_fairseq
+cd seosh_fairseq
+pip install --editable ./
+```
+
 * check pytorch version
 
 ```bash
@@ -58,17 +68,7 @@ cuda version : 11.1
          capability of this GPU is (6, 1)
 ```
 
-
-
-## 2. Fairseq (To install fairseq** and develop locally)
-
-``` bash
-git clone https://github.com/pytorch/seosh_fairseq
-cd seosh_fairseq
-pip install --editable ./
-```
-
-* check
+* check fairseq installation
 
 ```bash
 python3 -c "import fairseq; from fairseq.models.transformer_lm import TransformerLanguageModel;"
