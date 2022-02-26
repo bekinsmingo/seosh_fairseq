@@ -14,12 +14,12 @@ from omegaconf import II
 
 
 @dataclass
-class CrossEntropyCriterionConfig(FairseqDataclass):
+class CrossEntropyforData2vecCriterionConfig(FairseqDataclass):
     sentence_avg: bool = II("optimization.sentence_avg")
 
 
-@register_criterion("cross_entropy", dataclass=CrossEntropyCriterionConfig)
-class CrossEntropyCriterion(FairseqCriterion):
+@register_criterion("cross_entropy_for_data2vec", dataclass=CrossEntropyforData2vecCriterionConfig)
+class CrossEntropyCriterionforData2Vec(FairseqCriterion):
     def __init__(self, task, sentence_avg):
         super().__init__(task)
         self.sentence_avg = sentence_avg
@@ -32,7 +32,9 @@ class CrossEntropyCriterion(FairseqCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        net_output = model(**sample["net_input"])
+        # import pdb; pdb.set_trace()
+        # net_output = model(**sample["net_input"])
+        net_output = model(sample)
         loss, _ = self.compute_loss(model, net_output, sample, reduce=reduce)
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
@@ -49,20 +51,6 @@ class CrossEntropyCriterion(FairseqCriterion):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
         lprobs = lprobs.view(-1, lprobs.size(-1))
         target = model.get_targets(sample, net_output).view(-1)
-        '''
-        (Pdb) target
-        tensor([ 6, 11,  5,  ...,  5, 12,  2], device='cuda:0')
-        (Pdb) lprobs
-        tensor([[-3.4365, -5.2477, -7.7221,  ..., -3.7599, -7.0720, -3.8067],
-                [-5.1323, -4.1260, -5.5255,  ..., -3.6365, -4.0388, -4.0313],
-                [-4.7680, -5.4607, -2.6914,  ..., -5.1394, -4.6500, -2.5638],
-                ...,
-                [-4.8258, -3.7393, -5.3659,  ..., -3.1959, -5.3363, -1.4176],
-                [-7.8528, -3.9161, -6.2376,  ..., -1.8106, -6.6340, -1.3399],
-                [-5.3327, -5.6267, -7.0789,  ..., -3.9786, -7.4802, -3.0330]],
-            device='cuda:0', grad_fn=<ViewBackward>)
-        '''
-        # import pdb; pdb.set_trace()
         loss = F.nll_loss(
             lprobs,
             target,

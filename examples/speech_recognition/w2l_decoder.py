@@ -25,7 +25,7 @@ from omegaconf import open_dict
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf
 
 import pdb
-
+import time
 
 try:
     from flashlight.lib.text.dictionary import create_word_dict, load_words
@@ -79,15 +79,28 @@ class W2lDecoder(object):
             self.silence = tgt_dict.eos()
         self.asg_transitions = None
 
+        self.get_emission_time = 0
+        self.decoding_time = 0
+
     def generate(self, models, sample, **unused):
         """Generate a batch of inferences."""
         # model.forward normally channels prev_output_tokens into the decoder
         # separately, but SequenceGenerator directly calls model.encoder
+
+        start = time.time()
         encoder_input = {
             k: v for k, v in sample["net_input"].items() if k != "prev_output_tokens"
         }
         emissions = self.get_emissions(models, encoder_input)
-        return self.decode(emissions)
+        end = time.time()
+        self.get_emission_time += (end-start)
+
+        start = time.time()
+        result = self.decode(emissions)
+        end = time.time()
+        self.decoding_time += (end-start)
+
+        return result
 
     def get_emissions(self, models, encoder_input):
         """Run encoder and normalize emissions"""

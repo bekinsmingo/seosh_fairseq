@@ -37,6 +37,8 @@ class EMAModule:
         Otherwise EMA is in the same device as the model.
         """
 
+        # import pdb; pdb.set_trace()
+
         self.decay = config.ema_decay
         self.model = copy.deepcopy(model) # 모델을 deepcopy함
         self.model.requires_grad_(False) # ema는 업데이트 안하니까 gradient graph 필요없음.

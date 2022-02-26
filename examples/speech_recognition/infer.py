@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import sys
+import time
 
 import editdistance
 import numpy as np
@@ -531,7 +532,6 @@ def main(args, task=None, model_state=None):
 
             gen_timer.start()
 
-            # 다 거르는데?..
             if args.dump_emissions:
                 with torch.no_grad():
                     encoder_out = models[0](**sample["net_input"])
@@ -552,9 +552,6 @@ def main(args, task=None, model_state=None):
                         )
                         features[id.item()] = (feat[i], padding)
                     continue
-
-            # import pdb
-            # pdb.set_trace()
 
             hypos = task.inference_step(generator, models, sample, prefix_tokens)
 
@@ -816,6 +813,8 @@ def main(args, task=None, model_state=None):
                 1.0 / gen_timer.avg,
             )
         )
+        logger.info("| {} for extracting ctc emission".format(generator.get_emission_time))
+        logger.info("| {} for actual decoding time (viterbi, ngram so on)".format(generator.decoding_time))
         logger.info("| Generate {} with beam={}".format(args.gen_subset, args.beam))
 
     # return task, wer

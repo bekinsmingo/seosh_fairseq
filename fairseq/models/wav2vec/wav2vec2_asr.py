@@ -263,6 +263,8 @@ class Wav2VecCtc(BaseFairseqModel):
 
     def forward(self, **kwargs):
         x = self.w2v_encoder(**kwargs)
+        # dict_keys(['encoder_out', 'padding_mask', 'layer_results'])
+        # import pdb; pdb.set_trace()
         return x
 
 

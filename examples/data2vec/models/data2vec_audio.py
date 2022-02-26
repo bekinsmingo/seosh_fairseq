@@ -192,6 +192,8 @@ class Data2VecAudioModel(BaseFairseqModel):
             torch.FloatTensor(cfg.encoder_embed_dim).uniform_()
         ) # (Pdb) self.mask_emb.size(), torch.Size([768])
 
+        # import pdb; pdb.set_trace()
+
         self.encoder = TransformerEncoder(cfg)
         # transformer 뿐만 아니라 pos conv 가 있음.
         '''
@@ -353,8 +355,14 @@ class Data2VecAudioModel(BaseFairseqModel):
         padding_mask,
         mask_indices=None,
         mask_channel_indices=None,
+        mask_prob=None
     ):
         B, T, C = x.shape
+        if mask_prob is not None:
+            current_mask_prob = mask_prob
+        else:
+            current_mask_prob = self.mask_prob
+            
 
         if self.mask_channel_prob > 0 and self.mask_channel_before:
             mask_channel_indices = compute_mask_indices(
@@ -375,12 +383,12 @@ class Data2VecAudioModel(BaseFairseqModel):
             )
             x[mask_channel_indices] = 0
 
-        if self.mask_prob > 0:
+        if current_mask_prob > 0:
             if mask_indices is None:
                 mask_indices = compute_mask_indices(
                     (B, T),
                     padding_mask,
-                    self.mask_prob,
+                    current_mask_prob,
                     self.mask_length,
                     self.mask_selection,
                     self.mask_other,
@@ -443,9 +451,10 @@ class Data2VecAudioModel(BaseFairseqModel):
         mask=True, 
         features_only=False, # SSL 할거냐
         layer=None, 
-        mask_indices=None, # inptu mask
+        mask_indices=None, # input mask
         mask_channel_indices=None,
         padding_count=None,
+        cnn_features_only=False,
     ):
         features = source
 
@@ -477,7 +486,7 @@ class Data2VecAudioModel(BaseFairseqModel):
 
         orig_padding_mask = padding_mask
 
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         # 1d conv 이후의 output_lengths 를 계산하고 이를 바탕으로 padding mask를 다시 만드는?
         if padding_mask is not None and padding_mask.any():
@@ -516,6 +525,8 @@ class Data2VecAudioModel(BaseFairseqModel):
         # self.dropout_features 는 그럼 어디에 쓰이지?
         features = self.dropout_input(features)
 
+        # import pdb; pdb.set_trace()
+
         # 1d cnn을 통과한 (down sampling된) feature를 마스킹함.
         # finetuning을 할 때는 masking이 필요없어서 if, else로 나눈듯
         if mask:
@@ -524,10 +535,26 @@ class Data2VecAudioModel(BaseFairseqModel):
                 padding_mask,
                 mask_indices=mask_indices,
                 mask_channel_indices=mask_channel_indices,
+                mask_prob=None
             )
         else:
             x = features
             mask_indices = None
+
+        # import pdb; pdb.set_trace()
+        '''
+        (Pdb) mask_indices.size()
+        torch.Size([8, 634])
+        (Pdb) features.size()
+        torch.Size([8, 634, 768])
+        '''
+
+
+        if cnn_features_only:
+            return {
+                "x": x,
+                "padding_mask": padding_mask,
+            }
 
         # pos conv + transformer 를 통과시킴
         x, layer_results = self.encoder(
@@ -703,7 +730,7 @@ class Data2VecAudioModel(BaseFairseqModel):
 
     # finetuning에 사용됨 features_only=True
     def extract_features(
-        self, source, padding_mask, mask=False, layer=None
+        self, source, padding_mask, mask=False, layer=None, cnn_features_only=False,
     ):
         res = self.forward(
             source,
@@ -711,6 +738,7 @@ class Data2VecAudioModel(BaseFairseqModel):
             mask=mask,
             features_only=True,
             layer=layer,
+            cnn_features_only=cnn_features_only,
         )
         return res
 

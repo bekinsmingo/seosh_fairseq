@@ -26,6 +26,7 @@ dataset:
   validate_interval: 5
   required_batch_size_multiple: 1
   disable_validation: true
+  valid_subset: dev_clean
 
 distributed_training:
   distributed_world_size: 16

@@ -23,16 +23,15 @@ dataset:
 
 distributed_training:
   ddp_backend: legacy_ddp
-  distributed_world_size: 2
+  distributed_world_size: 8
 
 criterion:
   _name: cross_entropy_for_data2vec
 
 optimization:
-  max_update: 80000
-  lr: [0.00003]
+  max_update: 320000
+  lr: [0.0001]
   sentence_avg: true
-  update_freq: [4]
 
 optimizer:
   _name: adam
@@ -46,11 +45,11 @@ lr_scheduler:
 
 model:
   _name: data2vec_bimodal
-  w2v_ctc_path: ???
+  w2v_path: ???
   roberta_path: ???
   apply_mask: true
-  mask_prob: 0.65
-  mask_channel_prob: 0.5
+  mask_prob: 0.5
+  mask_channel_prob: 0.1
   mask_channel_length: 64
   layerdrop: 0.1
   activation_dropout: 0.1

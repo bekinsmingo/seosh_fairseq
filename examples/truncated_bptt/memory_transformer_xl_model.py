@@ -123,6 +123,11 @@ class MemoryTransformerXLConfig(FairseqDataclass):
         },
     )
 
+    export: bool = field(
+        default=False,
+        metadata={"help": "make the layernorm exportable with torchscript."},
+    )
+
 
 
 @register_model("memory_transformer_xl", dataclass=MemoryTransformerXLConfig)
@@ -166,6 +171,9 @@ class MemoryTransformerXLDecoder(FairseqIncrementalDecoder):
             adaptive_input_cutoff = cfg.adaptive_input_cutoff,
             adaptive_softmax_cutoff = cfg.adaptive_softmax_cutoff,
         )
+
+        self.adaptive_softmax = self.model.adaptive_softmax
+        self.output_proj_layer = self.model.to_logits
         
         self._mems = None
 
@@ -193,7 +201,12 @@ class MemoryTransformerXLDecoder(FairseqIncrementalDecoder):
             else:
                 self._mems = output[1]
 
-        return (output[0],)
+        if self.cfg.adaptive_softmax is None:
+            final_output = self.output_proj_layer(output[0])
+        else:
+            final_output = output[0]
+
+        return (final_output,)
 
     def max_positions(self):
         return self.cfg.max_target_positions

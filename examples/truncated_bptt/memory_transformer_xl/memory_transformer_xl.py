@@ -1,13 +1,11 @@
-import torch
-from torch import nn
-import torch.nn.functional as F
-
-from mogrifier import Mogrifier
-
 import math
 from collections import namedtuple
 from functools import partial
 from inspect import isfunction
+
+import torch
+from torch import nn
+import torch.nn.functional as F
 
 
 from fairseq.modules import (
@@ -22,6 +20,46 @@ from fairseq.modules import (
 )
 
 from fairseq import utils, options
+
+
+# Mogrifier
+
+def weight(dim_in, dim_out, factorize_k = None):
+    if factorize_k is None:
+        return nn.Linear(dim_in, dim_out, bias = False)
+
+    assert factorize_k < dim_in and factorize_k < dim_out, 'k must be of relative lower rank'
+
+    return nn.Sequential(
+        nn.Linear(dim_in, factorize_k, bias = False),
+        nn.Linear(factorize_k, dim_out, bias = False)
+    )
+
+class Mogrifier(nn.Module):
+    def __init__(self, dim, iters = 5, factorize_k = None):
+        super().__init__()
+        self.dim = dim
+        self.iters = iters
+
+        self.Q = weight(dim, dim, factorize_k)
+        self.R = weight(dim, dim, factorize_k) if iters > 1 else None
+
+    def forward(self, x, h):
+        shape = x.shape
+        *_, dim = shape
+        assert dim == self.dim, f'mogrifier accepts a dimension of {self.dim}'
+
+        x, h = map(lambda t: t.reshape(-1, dim), (x, h))
+
+        for ind in range(self.iters):
+            if (ind % 2) == 0:
+                x = 2 * self.Q(h).sigmoid() * x
+            else:
+                h = 2 * self.R(x).sigmoid() * h
+
+        x, h = map(lambda t: t.reshape(*shape), (x, h))
+        return x, h
+
 
 
 # structs
@@ -101,6 +139,7 @@ class PreNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
+        # self.norm = LayerNorm(dim)
         self.fn = fn
 
     def forward(self, x, **kwargs):
@@ -222,6 +261,8 @@ class SelfAttention(nn.Module):
 
         q = self.to_q(x)
 
+        # import pdb; pdb.set_trace()
+
         kv_input = torch.cat((mem_kv, lmem, mem, x), dim=1)
         kv_len = kv_input.shape[1]
         k, v = self.to_kv(kv_input).chunk(2, dim=-1)
@@ -278,6 +319,7 @@ class LinearSelfAttention(nn.Module):
         super().__init__()
         self.dim_head = dim // heads
         self.norm = nn.LayerNorm(dim, elementwise_affine = False)
+        # self.norm = LayerNorm(dim)
 
         self.to_q = init_parameter((dim, dim), dim)
         self.to_kv = init_parameter((dim, 2 * dim), dim)
@@ -427,34 +469,42 @@ class MemoryTransformerXL(nn.Module):
 
         wrapper = partial(GRUGating, dim, mogrify = mogrify_gru) if gru_gated_residual else Residual
 
-        self.attn_layers = nn.ModuleList([wrapper(PreNorm(dim, SelfAttention(dim, seq_len, mem_len, lmem_len, heads, dropout = attn_layer_dropout, attn_dropout = attn_dropout, one_kv_head = one_kv_head, num_mem_kv = num_mem_kv))) for _ in range(depth)])
+        self.attn_layers = nn.ModuleList([wrapper(PreNorm(dim, SelfAttention(dim, seq_len, mem_len, lmem_len, heads, \
+                                                                            dropout = attn_layer_dropout, attn_dropout = attn_dropout, \
+                                                                            one_kv_head = one_kv_head, num_mem_kv = num_mem_kv))) for _ in range(depth)])
         self.ff_layers = nn.ModuleList([wrapper(PreNorm(dim, FeedForward(dim, dropout = ff_dropout, glu = ff_glu))) for _ in range(depth)])
 
         self.memory_network = MemoryAttentionNetwork(dim, len(self.memory_layers), mem_len, lmem_len, num_mem_kv = num_mem_kv, mem_write_iters = mem_write_iters)
 
     def forward(self, x, memories = None, mask = None, detach_lmem = False):
-        x = self.token_emb(x)
-        x = self.to_model_dim(x)
-        b, t, d = x.shape
+        x = self.token_emb(x) # Adaptive input for wt103, 267744
+        x = self.to_model_dim(x) # identity if 512 (embdding out) == 512 (decoder input)
+        b, t, d = x.shape # torch.Size([64, 224, 512])
 
         assert t <= self.seq_len, f'input contains a sequence length {t} that is greater than the designated maximum sequence length {self.seq_len}'
 
+        # short mem, long mem
         memories = default(memories, (None, None))
         mem, lmem = memories
 
-        num_memory_layers = len(self.memory_layers)
+        num_memory_layers = len(self.memory_layers) # 2
 
         mem = default(mem, lambda: torch.empty(num_memory_layers, b, 0, d, **to(x)))
         lmem = default(lmem, lambda: torch.empty(b, 0, d, **to(x)))
 
+        # memory length
         mem_len, lmem_len = map(lambda t: t.shape[2], (mem, lmem))
+
+        # total key, value length
         total_len = mem_len + lmem_len + self.seq_len
 
-        pos_emb = self.pos_emb[:, (self.seq_len - t):total_len]
+        pos_emb = self.pos_emb[:, (self.seq_len-t):total_len]
 
         mem_iter = iterate_tensor(mem)
 
         hiddens = []
+
+        # import pdb; pdb.set_trace()
 
         for ind, (attn, ff) in enumerate(zip(self.attn_layers, self.ff_layers)):
             layer_num = ind + 1
@@ -467,15 +517,14 @@ class MemoryTransformerXL(nn.Module):
             x = attn(x, memories = memories, input_mask = mask, pos_emb = pos_emb)
             x = ff(x)
 
+            # import pdb; pdb.set_trace()
+
         hiddens = torch.stack(hiddens)
 
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
-        # need to use adaptive softmax
-        if self.adaptive_softmax is None:
-            out = self.to_logits(x)
-        else:
-            pass
+        # out = self.to_logits(x)
+        out = x
 
         # calculate next memory state
         # only push hidden to short term memory if input sequence length is full

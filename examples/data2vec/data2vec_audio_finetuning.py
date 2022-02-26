@@ -20,9 +20,11 @@ from fairseq.dataclass import FairseqDataclass
 from fairseq.dataclass.configs import GenerationConfig
 from fairseq.data.text_compressor import TextCompressor, TextCompressionLevel
 
-from . import register_task
-from .. import utils
-from ..logging import metrics
+from fairseq.tasks import FairseqTask, register_task
+from fairseq import utils
+from fairseq.logging import metrics
+
+from fairseq.optim.amp_optimizer import AMPOptimizer
 
 
 logger = logging.getLogger(__name__)
@@ -43,7 +45,7 @@ def label_len_fn(label):
 
 
 @dataclass
-class AudioFinetuningConfig(AudioPretrainingConfig):
+class Data2VecAudioFinetuning(AudioPretrainingConfig):
     # Options for reporting WER metrics during validation. Only applicable to
     # Seq2Seq models during fine-tuning
     eval_wer: bool = field(
@@ -101,47 +103,16 @@ class AudioFinetuningConfig(AudioPretrainingConfig):
         },
     )
 
-    # ## added for xlsr
-    # multiple_train_files: bool = field(
-    #     default=False,
-    #     metadata={
-    #         "help": "tmp",
-    #     },
-    # )
-    # shuffle_by_bucket: bool = field(
-    #     default=False,
-    #     metadata={
-    #         "help": "tmp",
-    #     },
-    # )
-    # shuffle_by_bucket_size: bool = field(
-    #     default=False,
-    #     metadata={
-    #         "help": "tmp",
-    #     },
-    # )
-    # mask_length: bool = field(
-    #     default=False,
-    #     metadata={
-    #         "help": "tmp",
-    #     },
-    # )
-    # mask_prob: float = field(
-    #     default=0.5,
-    #     metadata={
-    #         "help": "tmp",
-    #     },
-    # )
 
-@register_task("audio_finetuning", dataclass=AudioFinetuningConfig)
-class AudioFinetuningTask(AudioPretrainingTask):
+@register_task("data2vec_audio_finetuning", dataclass=Data2VecAudioFinetuning)
+class Data2VecAudioFinetuningTask(AudioPretrainingTask):
     """ """
 
-    cfg: AudioFinetuningConfig
+    cfg: Data2VecAudioFinetuning
 
     def __init__(
         self,
-        cfg: AudioFinetuningConfig,
+        cfg: Data2VecAudioFinetuning,
     ):
         super().__init__(cfg)
         self.blank_symbol = "<s>"
@@ -151,17 +122,12 @@ class AudioFinetuningTask(AudioPretrainingTask):
     def load_target_dictionary(self):
         if self.cfg.labels:
             dict_path = os.path.join(self.cfg.data, f"dict.{self.cfg.labels}.txt")
-            # import pdb
-            # pdb.set_trace()
-            # '''
-            # (Pdb) len(Dictionary.load(dict_path))
-            # 32
-            # '''
+            # dict_path = os.path.join(self.cfg.data, "dict.txt")
             return Dictionary.load(dict_path)
         return None
 
     def load_dataset(
-        self, split: str, task_cfg: AudioFinetuningConfig = None, **kwargs
+        self, split: str, task_cfg: Data2VecAudioFinetuning = None, **kwargs
     ):
         super().load_dataset(split, task_cfg, **kwargs)
 
@@ -171,7 +137,10 @@ class AudioFinetuningTask(AudioPretrainingTask):
             TextCompressionLevel, str(self.cfg.text_compression_level)
         )
         data_path = self.cfg.data
+        
+        # 이부분이 ltr 인지 wrd, phn 인지를 구분함
         label_path = os.path.join(data_path, f"{split}.{task_cfg.labels}")
+        # label_path = os.path.join(data_path, f"{split}.bin")
         skipped_indices = getattr(self.datasets[split], "skipped_indices", set())
         text_compressor = TextCompressor(level=text_compression_level)
         with open(label_path, "r") as f:
@@ -206,6 +175,20 @@ class AudioFinetuningTask(AudioPretrainingTask):
         model."""
         return self.state.target_dictionary
 
+    def train_step(
+        self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+    ):
+        model.train()
+        model.set_num_updates(update_num)
+        with torch.autograd.profiler.record_function("forward"):
+            with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
+                loss, sample_size, logging_output = criterion(model, sample)
+        if ignore_grad:
+            loss *= 0
+        with torch.autograd.profiler.record_function("backward"):
+            optimizer.backward(loss)
+        return loss, sample_size, logging_output
+
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
         if self.cfg.eval_wer and self.cfg.autoregressive:
@@ -227,7 +210,6 @@ class AudioFinetuningTask(AudioPretrainingTask):
         return loss, sample_size, logging_output
 
     def build_model(self, model_cfg: FairseqDataclass, from_checkpoint=False):
-        # import pdb; pdb.set_trace()
         model = super().build_model(model_cfg, from_checkpoint)
 
         if self.cfg.eval_wer and self.cfg.autoregressive:

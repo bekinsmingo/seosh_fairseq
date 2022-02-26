@@ -174,6 +174,7 @@ class AudioPretrainingTask(FairseqTask):
                 **self._get_mask_precompute_kwargs(task_cfg),
             )
         else:
+            # load wav files
             manifest_path = os.path.join(data_path, "{}.tsv".format(split))
 
             self.datasets[split] = FileAudioDataset(

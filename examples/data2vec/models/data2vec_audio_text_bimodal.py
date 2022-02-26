@@ -1,6 +1,7 @@
 
 import contextlib
 import copy
+from curses import keyname
 import logging
 import math
 import re
@@ -34,8 +35,13 @@ from fairseq.models.wav2vec import (
     Wav2Vec2AsrConfig,
     Wav2Vec2CtcConfig,
     Wav2VecCtc,
-    Wav2VecEncoder
+    Wav2VecEncoder,
+    Wav2Vec2Config
 )
+
+# from . import Data2VecAudioConfig
+
+from itertools import groupby
 
 # from examples.data2vec import (
 #     Data2VecTextConfig,
@@ -78,8 +84,14 @@ from fairseq.modules.checkpoint_activations import checkpoint_wrapper
 from fairseq.modules.quant_noise import quant_noise as apply_quant_noise_
 
 from fairseq.data.data_utils import post_process
+from fairseq.data import encoders
 
 from transformers import RobertaTokenizer
+
+
+from fairseq.modules import EMAModule, EMAModuleConfig
+
+# from fairseq.models.roberta.alignment_utils import align_bpe_to_words
 
 
 ############################################
@@ -88,6 +100,7 @@ from transformers import RobertaTokenizer
 ############################################
 
 @dataclass
+# class Data2VecAudioTextConfig(Wav2Vec2Config):
 class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
     decoder_embed_dim: int = field(
         default=768, metadata={"help": "decoder embedding dimension"}
@@ -146,6 +159,57 @@ class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
     )
 
 
+    # l1 smooth loss의 하이퍼 파라메터
+    loss_beta: float = field(
+        default=0, metadata={"help": "beta for smooth l1 loss. 0 means use l2 loss"}
+    )
+    loss_scale: Optional[float] = field(
+        default=None,
+        metadata={
+            "help": "scale the reconstruction loss by this constant. if None then scales by 1/sqrt(dim)"
+        },
+    )
+
+    # 상위 k 개 레이어의 output을 averaging해서 타겟으로 사용함. 
+    average_top_k_layers: int = field(
+        default=8, metadata={"help": "how many layers to average"}
+    )
+
+    layer_norm_target_layer: bool = False
+    instance_norm_target_layer: bool = False
+    instance_norm_targets: bool = False
+    layer_norm_targets: bool = False
+    batch_norm_target_layer: bool = False
+    group_norm_target_layer: bool = False
+
+    # EMA decay 하이퍼 파라메터
+    ema_decay: float = field(default=0.999, metadata={"help": "initial ema decay rate"})
+    ema_end_decay: float = field(
+        default=0.9999, metadata={"help": "final ema decay rate"}
+    )
+
+    # when to finish annealing ema decay rate
+    ema_anneal_end_step: int = II("optimization.max_update")
+
+    ema_transformer_only: bool = field(
+        default=True,
+        metadata={"help": "whether to momentum update only the transformer"},
+    )
+    ema_layers_only: bool = field(
+        default=True,
+        metadata={"help": "whether to momentum update only the transformer layers"},
+    )
+
+    max_update: int = II("optimization.max_update")
+
+    min_target_var: float = field(
+        default=0.1, metadata={"help": "stop training if target var falls below this"}
+    )
+    min_pred_var: float = field(
+        default=0.01,
+        metadata={"help": "stop training if prediction var falls below this"},
+    )
+
 from examples.speech_recognition.new.decoders.decoder_config import (
     DecoderConfig,
     FlashlightDecoderConfig,
@@ -167,29 +231,134 @@ class DecodingConfig(DecoderConfig, FlashlightDecoderConfig):
     )
 
 
+def get_annealed_rate(start, end, curr_step, total_steps):
+    r = end - start
+    pct_remaining = 1 - curr_step / total_steps
+    return end - r * pct_remaining
+
 
 @register_model("data2vec_bimodal", dataclass=Data2VecAudioTextConfig)
 class Data2VecAudioTextModel(BaseFairseqModel):
-    def __init__(self, audio_encoder, asr_eval_decoder, tgt_dict, text_encoder, roberta_src_dict, decoder):
+    def __init__(self, cfg: Data2VecAudioTextConfig, audio_encoder_ctc, asr_eval_decoder, asr_embedding_layer, asr_tgt_dict, text_encoder, roberta_src_dict, decoder):
         super().__init__()
 
+        self.cfg = cfg
+
+        ### Wav2Vec2 Encoder
         self.device = torch.device("cuda")
-        self.audio_encoder = audio_encoder.to(self.device)
+        self.audio_encoder_ctc = audio_encoder_ctc.to(self.device)
+        # self.audio_encoder = self.audio_encoder_ctc.w2v_encoder.w2v_model.to(self.device)
         # self.device = next(self.audio_encoder.parameters()).device
         self.asr_eval_decoder = asr_eval_decoder
-        self.asr_tgt_dict = tgt_dict
+        self.asr_embedding_layer = asr_embedding_layer
+        self.asr_tgt_dict = asr_tgt_dict
+        self.mask_token = self.asr_tgt_dict.bos_index
 
+        ### RoBERTa Encoder
         self.text_encoder = text_encoder.to(self.device)
         self.roberta_src_dict = roberta_src_dict
-
-        from fairseq.data import encoders
+        self.roberta_mask_idx = self.roberta_src_dict.index("<mask>")
+        assert self.roberta_mask_idx != self.roberta_src_dict.unk(), self.roberta_src_dict.symbols
+        self.roberta_tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
         self.bpe = encoders.build_bpe("gpt2")
         
+        ### Transformer Decoder for bimodal training
         self.decoder = decoder.to(self.device)
 
         # import pdb; pdb.set_trace()
 
-        # self.roberta_tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+        ### ema training
+        self.ema = None
+
+        self.average_top_k_layers = cfg.average_top_k_layers # 8
+
+        self.loss_beta = cfg.loss_beta # 0.0
+        self.loss_scale = cfg.loss_scale # None
+
+        self.mask_prob = cfg.mask_prob # 0.65
+        self.mask_selection = cfg.mask_selection # static
+        self.mask_other = cfg.mask_other # 0.0
+        self.mask_length = cfg.mask_length # 10
+        self.no_mask_overlap = cfg.no_mask_overlap # False
+        self.mask_min_space = cfg.mask_min_space # 1
+
+        self.mask_channel_prob = cfg.mask_channel_prob # 0.0
+        self.mask_channel_before = cfg.mask_channel_before # False
+        self.mask_channel_selection = cfg.mask_channel_selection # static
+        self.mask_channel_other = cfg.mask_channel_other # 0.0
+        self.mask_channel_length = cfg.mask_channel_length # 10
+        self.no_mask_channel_overlap = cfg.no_mask_channel_overlap # False
+        self.mask_channel_min_space = cfg.mask_channel_min_space # 1
+
+        self.num_updates = 0
+
+        self.final_proj = nn.Linear(self.cfg.decoder_embed_dim, self.cfg.decoder_embed_dim) 
+        
+
+        # import pdb; pdb.set_trace()
+
+    def make_ema_teacher(self):
+        ema_config = EMAModuleConfig(
+            ema_decay=self.cfg.ema_decay, # 0.999 default
+            ema_fp32=True,
+        )
+
+        skip_keys = set()
+
+        for k, v in self.decoder.named_parameters():
+            # print('name:',k)
+            if 'layers' not in k :
+                # skip_keys.add(k.split('.weight')[0])
+                skip_keys.add(k)
+
+        self.ema = EMAModule(
+            self.decoder,
+            ema_config,
+            skip_keys=skip_keys
+        )
+
+        # import pdb; pdb.set_trace()
+
+        # if self.cfg.ema_layers_only:
+        #     self.cfg.ema_transformer_only = True
+        #     for k, _ in self.encoder.pos_conv.named_parameters():
+        #         skip_keys.add(f"pos_conv.{k}")
+        # self.ema = EMAModule(
+        #     self.encoder if self.cfg.ema_transformer_only else self,
+        #     ema_config,
+        #     skip_keys=skip_keys,
+        # )
+
+        # self.ema = EMAModule(
+        #     self,
+        #     ema_config,
+        #     skip_keys=skip_keys,
+        # )
+
+    def set_num_updates(self, num_updates):
+        super().set_num_updates(num_updates)
+
+        if self.ema is None and self.final_proj is not None:
+            logger.info(f"making ema teacher")
+            self.make_ema_teacher()
+        elif self.training and self.ema is not None:
+            if self.cfg.ema_decay != self.cfg.ema_end_decay:
+                if num_updates >= self.cfg.ema_anneal_end_step:
+                    decay = self.cfg.ema_end_decay
+                else:
+                    decay = get_annealed_rate(
+                        self.cfg.ema_decay,
+                        self.cfg.ema_end_decay,
+                        num_updates,
+                        self.cfg.ema_anneal_end_step,
+                    )
+                self.ema.set_decay(decay)
+            if self.ema.get_decay() < 1:
+                # self.ema.step(self.encoder if self.cfg.ema_transformer_only else self)
+                self.ema.step(self.decoder)
+
+        self.num_updates = num_updates
+
 
     @classmethod
     def build_model(cls, cfg: Data2VecAudioTextConfig, task: FairseqTask):
@@ -202,20 +371,20 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             padding_idx = dictionary.pad()
             emb = Embedding(num_embeddings, embed_dim, padding_idx)
             return emb
-        
-        # import pdb; pdb.set_trace()
 
-        decoder_embed_tokens = build_embedding(tgt_dict, cfg.decoder_embed_dim)
+        ### Wav2Vec2 Encoder
+        audio_encoder_ctc, w2v_encoder_embed_dim, asr_tgt_dict = cls.build_audio_encoder(cfg)
+        asr_eval_decoder = cls.build_asr_eval_decoder(asr_tgt_dict)
+        asr_embedding_layer = build_embedding(asr_tgt_dict, cfg.decoder_embed_dim)
 
-        audio_encoder, w2v_encoder_embed_dim = cls.build_audio_encoder(cfg)
-        asr_eval_decoder = cls.build_asr_eval_decoder(tgt_dict)
-        # import pdb; pdb.set_trace()
+        ### RoBERTa Encoder
         text_encoder, roberta_src_dict = cls.build_text_encoder(cfg)
-        decoder = cls.build_decoder(cfg, w2v_encoder_embed_dim, tgt_dict, decoder_embed_tokens)
-        
-        # import pdb; pdb.set_trace()
 
-        return Data2VecAudioTextModel(audio_encoder, asr_eval_decoder, tgt_dict, text_encoder, roberta_src_dict, decoder)
+        ### Transformer Decoder for bimodal training
+        # decoder = cls.build_decoder(cfg, w2v_encoder_embed_dim, tgt_dict, asr_embedding_layer)
+        decoder = cls.build_decoder(cfg, w2v_encoder_embed_dim, tgt_dict, text_encoder.encoder.sentence_encoder.embed_tokens)
+
+        return Data2VecAudioTextModel(cfg, audio_encoder_ctc, asr_eval_decoder, asr_embedding_layer, asr_tgt_dict, text_encoder, roberta_src_dict, decoder)
 
 
     @classmethod
@@ -235,7 +404,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         overrides = {
             "criterion": 'ctc',
-            "data": '/workspace/librispeech_model/am/fairseq_audio_data2', 
+            "data": '/workspace/data2vec/only_dict_for_w2v2', 
             "post_process": 'letter', 
             "scoring": 'wer', 
             "task": 'audio_finetuning'
@@ -280,11 +449,13 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         )
         model = models[0]
 
+        # import pdb; pdb.set_trace()
+
         w2v_encoder_embed_dim = saved_cfg.model.w2v_args.model.encoder_embed_dim
 
         # import pdb; pdb.set_trace()
             
-        return model, w2v_encoder_embed_dim
+        return model, w2v_encoder_embed_dim, task.target_dictionary
 
     @classmethod
     def build_asr_eval_decoder(cls, tgt_dict):
@@ -312,8 +483,6 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         )
         model = models[0]
 
-        # import pdb; pdb.set_trace()
-
         return model, task.source_dictionary
 
     @classmethod
@@ -322,67 +491,164 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         # return FairseqNATDecoder(cfg, tgt_dict, embed_tokens)
         return TransformerDecoderBase(cfg, w2v_encoder_embed_dim, tgt_dict, embed_tokens)
 
-    def forward(self, **kwargs):
-        res = self.audio_encoder.w2v_encoder.w2v_model.extract_features(**kwargs)
+    def forward(self, sample):
+
+
+        #############################################################
+        ##########    Get CTC emission and greedy output    #########
+        #############################################################
+
+        # for mask-ctc training
+        target = sample['target']
+        target_len = sample['target_lengths']
+        input = sample['net_input']
+
+        # res = self.audio_encoder_ctc.w2v_encoder.w2v_model.extract_features(**input)
+        cnn_outputs = self.audio_encoder_ctc.w2v_encoder.w2v_model.extract_features(**input, cnn_features_only=True, mask=False)
+        res = self.audio_encoder_ctc.w2v_encoder.w2v_model.encoder(cnn_outputs['x'],cnn_outputs['padding_mask'])
+        x = res[0]
+
         # import pdb; pdb.set_trace()
-        x, padding_mask = res['x'], res['padding_mask']
-        acoustic_representation = x
 
         # B x T x C -> T x B x C
-
         x = x.transpose(0, 1)
-        x = self.audio_encoder.w2v_encoder.final_dropout(x) # torch.Size([740, 1, 1024])
-        ctc_emissions = self.audio_encoder.w2v_encoder.proj(x)
+        x = self.audio_encoder_ctc.w2v_encoder.final_dropout(x) # torch.Size([740, 1, 1024])
+        acoustic_representation = x
 
-        ctc_emissions = self.audio_encoder.w2v_encoder.w2v_model.get_normalized_probs(ctc_emissions,log_probs=True)
-
-
+        ctc_emissions = self.audio_encoder_ctc.w2v_encoder.proj(x) # torch.Size([1, 740, 32])
+        ctc_emissions = self.audio_encoder_ctc.w2v_encoder.w2v_model.get_normalized_probs(ctc_emissions,log_probs=True)
         ctc_emissions = ctc_emissions.transpose(0, 1) # torch.Size([1, 740, 32])
 
-        ctc_output = self.asr_eval_decoder.decode(ctc_emissions)
 
-        ctc_output = [
-            self.process_sentence(ctc_output[b][0])
+
+        # # #############################################################
+        # # ###################    Make Mask Input    ###################
+        # # #############################################################
+
+        transcripts = self.asr_eval_decoder.decode(ctc_emissions)
+        transcripts = [
+            self.process_sentence(transcripts[b][0])
             for b in range(ctc_emissions.size(0))
         ]
 
-
-        # # greedy ctc outputs
-        # ctc_probs, ctc_ids = torch.exp(ctc_emissions).max(dim=-1)
-        # y_hat = torch.stack([x[0] for x in groupby(ctc_ids[0])])
-        # y_idx = torch.nonzero(y_hat != 0).squeeze(-1)
-
         # import pdb; pdb.set_trace()
 
-        # trellis = get_trellis(ctc_emissions, tokens)
+        # make masked inputs for decoder using forced alignment probability
+        mask_indices = []
+        cnn_output_mask_indices = []
+        # for emission, transcript in zip(ctc_emissions, target):
+        for idx, (emission, transcript, cnn_output) in enumerate(zip(ctc_emissions, transcripts, cnn_outputs['x'])):
+            transcript = transcript.replace(' ','|') + ('|')
+            tokens = [self.asr_tgt_dict.indices[c] for c in transcript]
+            # tokens = transcript.cpu().tolist()
+            emission = emission.cpu()
+            sent = transcript
+            # sent = post_process(self.asr_tgt_dict.string(transcript), 'letter').replace(' ','|') + ('|')
+            # import pdb; pdb.set_trace()
+            trellis = get_trellis(emission, tokens)
+            path = backtrack(trellis, emission, tokens)
+            segments = merge_repeats(path, sent)
+            word_segments = merge_words(segments)
 
-        # path = backtrack(trellis, emission, tokens)
-        # print(path)
+            # mask_indice = []
+            # for seg in segments:
+            #     if seg.score <0.95:
+            #         mask_indice.append(self.mask_token)
+            #     else:
+            #         mask_indice.append(self.asr_tgt_dict.index(seg.label))
 
-        # segments = merge_repeats(path)
-        # for seg in segments:
-        #     print(seg)
+            mask_indice = []
+            dummy=10
+            cnn_output_mask = torch.zeros(cnn_output.size(0))
+            for seg in word_segments:
+                if seg.score <0.8:
+                    mask_indice += [0]*len(seg.label)
+                    cnn_output_mask[seg.start:seg.end]=1
+                else:
+                    mask_indice += [dummy]*len(seg.label)
+                mask_indice.append(0)
+            mask_indices.append(mask_indice)
+            cnn_output_mask_indices.append(cnn_output_mask)
 
-        # word_segments = merge_words(segments)
-        # for word in word_segments:
-        #     print(word)
-
-        # self.roberta_tokenizer(ctc_output) # huggingface roberta tokenizer
-        roberta_input, _, _ = self.encode_batch_sent_for_roberta(ctc_output) # fairseq roberta tokenizer
-        roberta_input = roberta_input.to(self.device)
-
+        cnn_output_mask_indices = (torch.stack(cnn_output_mask_indices).to(self.device)==1)
         # import pdb; pdb.set_trace()
 
-        text_representation = self.text_encoder(roberta_input, features_only=True)[0] # torch.Size([1, 44, 768])
+        roberta_input, roberta_input_mask, roberta_input_length = self.encode_batch_sent_for_roberta(transcripts) # fairseq roberta tokenizer
+        post_processed_transcript = self.lower_and_punc(transcripts)
+        bpe_mask = torch.zeros_like(roberta_input, dtype=torch.long)
 
-        # import pdb; pdb.set_trace()
+        for idx, (bpe_sent, bpe_length, sent) in enumerate(zip(roberta_input, roberta_input_length, post_processed_transcript)):
+            # import pdb; pdb.set_trace()
+            bpe_sent = bpe_sent[:bpe_length]
+            alignment = align_bpe_to_words(self.roberta_src_dict, self.bpe, bpe_sent, sent)
+            alignment_mask = (torch.Tensor(mask_indices[idx]) == 0)
+            masked_alignment = torch.LongTensor(alignment).masked_fill(alignment_mask,0)
+            _ = torch.stack([x[0] for x in groupby(masked_alignment)])
+            confident_idx = torch.unique(_)[1:]
+            bpe_mask[idx][confident_idx]=1
 
-        decoder_out, _ = self.decoder(prev_output_tokens = text_representation, encoder_out = x)
-        # encoder-side attention, should be of size T x B x C
+        roberta_input = roberta_input.masked_fill(torch.logical_not(bpe_mask),self.roberta_mask_idx).to(self.device)
 
         import pdb; pdb.set_trace()
 
+        # text_representation = self.asr_embedding_layer(torch.LongTensor(decoder_inputs).cuda())
+        # decoder_out, _ = self.decoder(prev_output_tokens = text_representation, encoder_out = acoustic_representation)
+
+        # import pdb; pdb.set_trace()
+
+        #############################################################
+        #######################    Roberta    #######################
+        #############################################################
+
+
+        # # self.roberta_tokenizer(transcripts) # huggingface roberta tokenizer
+        # roberta_input, _, _ = self.encode_batch_sent_for_roberta(transcripts) # fairseq roberta tokenizer
+        # roberta_input = roberta_input.to(self.device)
+        # text_representation = self.text_encoder(roberta_input, features_only=True)[0] # torch.Size([1, 44, 768])
+
+        # decoder_out, _ = self.decoder(prev_output_tokens = text_representation, encoder_out = acoustic_representation)
+        # # encoder-side attention, should be of size T x B x C
+
+
+        #############################################################
+        #######################    naive    #######################
+        #############################################################
+
+
+        # text_representation = self.text_encoder.encoder.sentence_encoder.embed_tokens(target)
+
+        uniform_mask = torch.FloatTensor(target.size()).uniform_() > 0.85
+        text_representation = self.text_encoder(target.masked_fill(uniform_mask.to(self.device),self.roberta_mask_idx), features_only=True)[0]
+
+        import pdb; pdb.set_trace()
+
+        # cnn_outputs['x'].masked_fill(cnn_output_mask_indices, self.audio_encoder.mask_emb)
+        masked_cnn_output, padding_mask = self.audio_encoder_ctc.w2v_encoder.w2v_model.apply_mask(cnn_outputs['x'],cnn_outputs['padding_mask'],mask_indices=cnn_output_mask_indices)
+        res = self.audio_encoder_ctc.w2v_encoder.w2v_model.encoder(masked_cnn_output, padding_mask)
+        x, padding_mask, layer_results = res[0], cnn_outputs['padding_mask'], res[1]
+
+        # import pdb; pdb.set_trace()
+
+        # text_representation = self.text_encoder(roberta_input, features_only=True)[0]
+        decoder_out, _ = self.decoder(prev_output_tokens = text_representation, encoder_out = acoustic_representation)
+
+        # if target.size(0) == 3 : import pdb; pdb.set_trace()
+
         return decoder_out
+
+
+    def get_targets(self, sample, net_output):
+        return sample['target'].long()
+
+
+    def get_normalized_probs(self, net_output, log_probs, sample=None):
+        """Get normalized probabilities (or log probs) from a net's output."""
+        logits = net_output.float()
+        if log_probs:
+            return F.log_softmax(logits, dim=-1)
+        else:
+            return F.softmax(logits, dim=-1)
+
 
     def process_sentence(self, hypo):
         # Processes hypothesis.
@@ -393,9 +659,16 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         else:
             # hyp_words = post_process(hyp_pieces, self.cfg.common_eval.post_process)
             hyp_words = post_process(hyp_pieces, 'letter')
-        return hyp_words.lower()
+        # output = hyp_words.lower()
+        output = hyp_words
+        return output
+
+    def lower_and_punc(self, sents):
+        return [ (sent[0].upper() + sent[1:].lower() + '.') for sent in sents]
 
     def encode_batch_sent_for_roberta(self, sents, *addl_sentences, no_separator=False):
+
+        sents = self.lower_and_punc(sents)
 
         tmp = []
         for sent in sents :
@@ -403,7 +676,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             # sent = "<s> " + sent[0].upper() + sent[1:] + " </s>"
             # tokens = self.roberta_src_dict.encode_line(sent, append_eos=False, add_if_not_exist=False)
 
-            bpe_sentence = "<s> " + self.bpe.encode(sent[0].upper() + sent[1:]) + " </s>"
+            bpe_sentence = "<s> " + self.bpe.encode(sent) + " </s>"
             # for s in addl_sentences:
             #     bpe_sentence += " </s>" if not no_separator else ""
             #     bpe_sentence += " " + self.bpe.encode(s) + " </s>"
@@ -443,7 +716,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
     def max_positions(self):
         """Maximum length supported by the model."""
-        return (self.audio_encoder.max_positions(), self.decoder.max_positions())
+        return (self.audio_encoder_ctc.max_positions(), self.decoder.max_positions())
 
     def max_decoder_positions(self):
         """Maximum length supported by the decoder."""
@@ -461,7 +734,7 @@ def pad(input, max_len, pad_id):
     else:
         padded = input + torch.LongTensor([pad_id]) * pad_needed
     mask = [1] * len(input) + [0] * pad_needed
-    return padded, mask, len(input) -1
+    return padded, mask, len(input)
 
 
 def batch_pad(input, pad_id):
@@ -536,7 +809,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
 
         # import pdb; pdb.set_trace()
 
-        # self.embed_tokens = embed_tokens
+        self.embed_tokens = embed_tokens
 
         self.embed_scale = 1.0 if self.cfg.no_scale_embedding else math.sqrt(embed_dim)
 
@@ -603,41 +876,41 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
 
         ## dont need embedding layer
 
-        # self.output_projection = output_projection
-        # if self.output_projection is None:
-        #     self.build_output_projection(self.cfg, dictionary, embed_tokens)
+        self.output_projection = output_projection
+        if self.output_projection is None:
+            self.build_output_projection(self.cfg, dictionary, embed_tokens)
 
-    # def build_output_projection(self, cfg, dictionary, embed_tokens):
-    #     if cfg.adaptive_softmax_cutoff is not None:
-    #         self.adaptive_softmax = AdaptiveSoftmax(
-    #             len(dictionary),
-    #             self.output_embed_dim,
-    #             utils.eval_str_list(cfg.adaptive_softmax_cutoff, type=int),
-    #             dropout=cfg.adaptive_softmax_dropout,
-    #             adaptive_inputs=embed_tokens if cfg.tie_adaptive_weights else None,
-    #             factor=cfg.adaptive_softmax_factor,
-    #             tie_proj=cfg.tie_adaptive_proj,
-    #         )
-    #     elif self.share_input_output_embed:
-    #         self.output_projection = nn.Linear(
-    #             self.embed_tokens.weight.shape[1],
-    #             self.embed_tokens.weight.shape[0],
-    #             bias=False,
-    #         )
-    #         self.output_projection.weight = self.embed_tokens.weight
-    #     else:
-    #         self.output_projection = nn.Linear(
-    #             self.output_embed_dim, len(dictionary), bias=False
-    #         )
-    #         nn.init.normal_(
-    #             self.output_projection.weight, mean=0, std=self.output_embed_dim**-0.5
-    #         )
-    #     num_base_layers = cfg.base_layers
-    #     for i in range(num_base_layers):
-    #         self.layers.insert(
-    #             ((i + 1) * cfg.decoder.layers) // (num_base_layers + 1),
-    #             BaseLayer(cfg),
-    #         )
+    def build_output_projection(self, cfg, dictionary, embed_tokens):
+        if cfg.adaptive_softmax_cutoff is not None:
+            self.adaptive_softmax = AdaptiveSoftmax(
+                len(dictionary),
+                self.output_embed_dim,
+                utils.eval_str_list(cfg.adaptive_softmax_cutoff, type=int),
+                dropout=cfg.adaptive_softmax_dropout,
+                adaptive_inputs=embed_tokens if cfg.tie_adaptive_weights else None,
+                factor=cfg.adaptive_softmax_factor,
+                tie_proj=cfg.tie_adaptive_proj,
+            )
+        elif self.share_input_output_embed:
+            self.output_projection = nn.Linear(
+                self.embed_tokens.weight.shape[1],
+                self.embed_tokens.weight.shape[0],
+                bias=False,
+            )
+            self.output_projection.weight = self.embed_tokens.weight
+        else:
+            self.output_projection = nn.Linear(
+                self.output_embed_dim, len(dictionary), bias=False
+            )
+            nn.init.normal_(
+                self.output_projection.weight, mean=0, std=self.output_embed_dim**-0.5
+            )
+        num_base_layers = cfg.base_layers
+        for i in range(num_base_layers):
+            self.layers.insert(
+                ((i + 1) * cfg.decoder.layers) // (num_base_layers + 1),
+                BaseLayer(cfg),
+            )
 
     def build_decoder_layer(self, cfg, no_encoder_attn=False):
         layer = transformer_layer.TransformerDecoderLayerBase(cfg, no_encoder_attn)
@@ -693,8 +966,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             alignment_heads=alignment_heads,
         )
 
-        # if not features_only:
-        #     x = self.output_layer(x)
+        if not features_only:
+            x = self.output_layer(x)
 
         return x, extra
 
@@ -864,13 +1137,13 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
 
         return x, {"attn": [attn], "inner_states": inner_states}
 
-    # def output_layer(self, features):
-    #     """Project features to the vocabulary size."""
-    #     if self.adaptive_softmax is None:
-    #         # project back to size of vocabulary
-    #         return self.output_projection(features)
-    #     else:
-    #         return features
+    def output_layer(self, features):
+        """Project features to the vocabulary size."""
+        if self.adaptive_softmax is None:
+            # project back to size of vocabulary
+            return self.output_projection(features)
+        else:
+            return features
 
     def max_positions(self):
         """Maximum output length supported by the decoder."""
@@ -957,113 +1230,182 @@ def Embedding(num_embeddings, embedding_dim, padding_idx):
 
 
 
+
+################################################################################################
+#########################        Align bpe tokens to word tokens      ##########################
+################################################################################################
+
+
+def align_bpe_to_words(roberta_dict, bpe, bpe_tokens: torch.LongTensor, other_tokens: List[str]):
+
+    # import pdb; pdb.set_trace()
+
+    assert bpe_tokens.dim() == 1
+    assert bpe_tokens[0] == 0
+
+    def clean(text):
+        return text.strip()
+
+    # import pdb; pdb.set_trace()
+
+    # remove whitespaces to simplify alignment
+    bpe_tokens = [roberta_dict.string([x]) for x in bpe_tokens]
+    bpe_tokens = [
+        clean(bpe.decode(x) if x not in {"<s>", ""} else x) for x in bpe_tokens
+    ]
+    other_tokens = [clean(str(o)) for o in other_tokens]
+
+    # import pdb; pdb.set_trace()
+
+    # strip leading <s>
+    bpe_tokens = bpe_tokens[1:]
+    assert "".join(bpe_tokens) == "".join(other_tokens)
+
+    # create alignment from every word to a list of BPE tokens
+    alignment = []
+    bpe_toks = filter(lambda item: item[1] != "", enumerate(bpe_tokens, start=1))
+    j, bpe_tok = next(bpe_toks)
+    for other_tok in other_tokens:
+        bpe_indices = []
+        while True:
+            if other_tok.startswith(bpe_tok):
+                bpe_indices.append(j)
+                other_tok = other_tok[len(bpe_tok) :]
+                try:
+                    j, bpe_tok = next(bpe_toks)
+                except StopIteration:
+                    j, bpe_tok = None, None
+            elif bpe_tok.startswith(other_tok):
+                # other_tok spans multiple BPE tokens
+                bpe_indices.append(j)
+                bpe_tok = bpe_tok[len(other_tok) :]
+                other_tok = ""
+            else:
+                raise Exception('Cannot align "{}" and "{}"'.format(other_tok, bpe_tok))
+            if other_tok == "":
+                break
+        assert len(bpe_indices) > 0
+
+        # import pdb; pdb.set_trace()
+
+        # alignment.append(bpe_indices)
+        alignment.append(bpe_indices[0])
+    assert len(alignment) == len(other_tokens)
+
+    return alignment
+
+
+
 ################################################################################################
 ########################        Implementation of forced alinger      ##########################
 ########################   need for token (word) - wise probability   ##########################
 ################################################################################################
 
-def get_trellis(emission, tokens, blank_id=0):
-  num_frame = emission.size(0)
-  num_tokens = len(tokens)
 
-  # Trellis has extra diemsions for both time axis and tokens.
-  # The extra dim for tokens represents <SoS> (start-of-sentence)
-  # The extra dim for time axis is for simplification of the code.
-  trellis = torch.full((num_frame+1, num_tokens+1), -float('inf'))
-  trellis[:, 0] = 0
-  for t in range(num_frame):
-    trellis[t+1, 1:] = torch.maximum(
-        # Score for staying at the same token
-        trellis[t, 1:] + emission[t, blank_id],
-        # Score for changing to the next token
-        trellis[t, :-1] + emission[t, tokens],
-    )
-  return trellis
+def get_trellis(emission, tokens, blank_id=0):
+    num_frame = emission.size(0)
+    num_tokens = len(tokens)
+
+    # Trellis has extra diemsions for both time axis and tokens.
+    # The extra dim for tokens represents <SoS> (start-of-sentence)
+    # The extra dim for time axis is for simplification of the code.
+    trellis = torch.full((num_frame+1, num_tokens+1), -float('inf'))
+    trellis[:, 0] = 0
+    for t in range(num_frame):
+        trellis[t+1, 1:] = torch.maximum(
+            # Score for staying at the same token
+            trellis[t, 1:] + emission[t, blank_id],
+            # Score for changing to the next token
+            trellis[t, :-1] + emission[t, tokens],
+        )
+    return trellis
 
 
 @dataclass
 class Point:
-  token_index: int
-  time_index: int
-  score: float
+    token_index: int
+    time_index: int
+    score: float
 
 
 def backtrack(trellis, emission, tokens, blank_id=0):
-  # Note:
-  # j and t are indices for trellis, which has extra dimensions
-  # for time and tokens at the beginning.
-  # When refering to time frame index `T` in trellis,
-  # the corresponding index in emission is `T-1`.
-  # Similarly, when refering to token index `J` in trellis,
-  # the corresponding index in transcript is `J-1`.
-  j = trellis.size(1) - 1
-  t_start = torch.argmax(trellis[:, j]).item()
+    # Note:
+    # j and t are indices for trellis, which has extra dimensions
+    # for time and tokens at the beginning.
+    # When refering to time frame index `T` in trellis,
+    # the corresponding index in emission is `T-1`.
+    # Similarly, when refering to token index `J` in trellis,
+    # the corresponding index in transcript is `J-1`.
+    j = trellis.size(1) - 1
+    t_start = torch.argmax(trellis[:, j]).item()
 
-  path = []
-  for t in range(t_start, 0, -1):
-    # 1. Figure out if the current position was stay or change
-    # Note (again):
-    # `emission[J-1]` is the emission at time frame `J` of trellis dimension.
-    # Score for token staying the same from time frame J-1 to T.
-    stayed = trellis[t-1, j] + emission[t-1, blank_id]
-    # Score for token changing from C-1 at T-1 to J at T.
-    changed = trellis[t-1, j-1] + emission[t-1, tokens[j-1]]
+    path = []
+    for t in range(t_start, 0, -1):
+        # 1. Figure out if the current position was stay or change
+        # Note (again):
+        # `emission[J-1]` is the emission at time frame `J` of trellis dimension.
+        # Score for token staying the same from time frame J-1 to T.
+        stayed = trellis[t-1, j] + emission[t-1, blank_id]
+        # Score for token changing from C-1 at T-1 to J at T.
+        changed = trellis[t-1, j-1] + emission[t-1, tokens[j-1]]
 
-    # 2. Store the path with frame-wise probability.
-    prob = emission[t-1, tokens[j-1] if changed > stayed else 0].exp().item()
-    # Return token index and time index in non-trellis coordinate.
-    path.append(Point(j-1, t-1, prob))
+        # 2. Store the path with frame-wise probability.
+        prob = emission[t-1, tokens[j-1] if changed > stayed else 0].exp().item()
+        # Return token index and time index in non-trellis coordinate.
+        path.append(Point(j-1, t-1, prob))
 
-    # 3. Update the token
-    if changed > stayed:
-      j -= 1
-      if j == 0:
-        break
-  else:
-    raise ValueError('Failed to align')
-  return path[::-1]
+        # 3. Update the token
+        if changed > stayed:
+            j -= 1
+            if j == 0:
+                break
+    else:
+        raise ValueError('Failed to align')
+    return path[::-1]
 
 
 # Merge the labels
 @dataclass
 class Segment:
-  label: str
-  start: int
-  end: int
-  score: float
+    label: str
+    start: int
+    end: int
+    score: float
 
-  def __repr__(self):
-    return f"{self.label}\t({self.score:4.2f}): [{self.start:5d}, {self.end:5d})"
+    def __repr__(self):
+        return f"{self.label}\t({self.score:4.2f}): [{self.start:5d}, {self.end:5d})"
 
-  @property
-  def length(self):
-    return self.end - self.start
+    @property
+    def length(self):
+        return self.end - self.start
 
-def merge_repeats(path):
-  i1, i2 = 0, 0
-  segments = []
-  while i1 < len(path):
-    while i2 < len(path) and path[i1].token_index == path[i2].token_index:
-      i2 += 1
-    score = sum(path[k].score for k in range(i1, i2)) / (i2 - i1)
-    segments.append(Segment(transcript[path[i1].token_index], path[i1].time_index, path[i2-1].time_index + 1, score))
-    i1 = i2
-  return segments
+def merge_repeats(path, transcript):
+    # import pdb; pdb.set_trace()
+    i1, i2 = 0, 0
+    segments = []
+    while i1 < len(path):
+        while i2 < len(path) and path[i1].token_index == path[i2].token_index:
+            i2 += 1
+        score = sum(path[k].score for k in range(i1, i2)) / (i2 - i1)
+        segments.append(Segment(transcript[path[i1].token_index], path[i1].time_index, path[i2-1].time_index + 1, score))
+        i1 = i2
+        # import pdb; pdb.set_trace()
+    return segments
 
 
 # Merge words
 def merge_words(segments, separator='|'):
-  words = []
-  i1, i2 = 0, 0
-  while i1 < len(segments):
-    if i2 >= len(segments) or segments[i2].label == separator:
-      if i1 != i2:
-        segs = segments[i1:i2]
-        word = ''.join([seg.label for seg in segs])
-        score = sum(seg.score * seg.length for seg in segs) / sum(seg.length for seg in segs)
-        words.append(Segment(word, segments[i1].start, segments[i2-1].end, score))
-      i1 = i2 + 1
-      i2 = i1
-    else:
-      i2 += 1
-  return words
+    words = []
+    i1, i2 = 0, 0
+    while i1 < len(segments):
+        if i2 >= len(segments) or segments[i2].label == separator:
+            if i1 != i2:
+                segs = segments[i1:i2]
+                word = ''.join([seg.label for seg in segs])
+                score = sum(seg.score * seg.length for seg in segs) / sum(seg.length for seg in segs)
+                words.append(Segment(word, segments[i1].start, segments[i2-1].end, score))
+            i1 = i2 + 1
+            i2 = i1
+        else:
+            i2 += 1
+    return words

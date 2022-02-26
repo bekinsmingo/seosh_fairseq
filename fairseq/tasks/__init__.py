@@ -42,8 +42,8 @@ def setup_task(cfg: FairseqDataclass, **kwargs):
             dc = TASK_DATACLASS_REGISTRY[task_name]
             # import pdb; pdb.set_trace()
             # cfg = merge_with_parent(dc(), cfg)
-            # if ('multiple_train_files' in cfg.keys()) or ('cache_in_scratch' in cfg.keys()):
-            if ('multiple_train_files' in cfg.keys()):
+            if ('multiple_train_files' in cfg.keys()) or ('cache_in_scratch' in cfg.keys()):
+                # if ('multiple_train_files' in cfg.keys()):
                 cfg = merge_with_parent(dc(), cfg, remove_missing=True)
             else:
                 cfg = merge_with_parent(dc(), cfg)
