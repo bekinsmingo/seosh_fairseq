@@ -45,90 +45,51 @@ def label_len_fn(label):
 
 
 @dataclass
-class Data2VecAudioFinetuning(AudioPretrainingConfig):
-    # Options for reporting WER metrics during validation. Only applicable to
-    # Seq2Seq models during fine-tuning
-    eval_wer: bool = field(
-        default=False, metadata={"help": "compute WER for Seq2Seq models"}
-    )
-    eval_wer_config: GenerationConfig = field(
-        default_factory=lambda: GenerationConfig(),
-        metadata={"help": "beam search config for evaluating wer during training"},
-    )
-    eval_wer_tokenizer: Any = field(
-        default=None,
-        metadata={"help": "tokenizer config for evaluating wer during training"},
-    )
-    eval_wer_post_process: str = field(
-        default="letter",
-        metadata={
-            "help": "remove BPE tokens before scoring (can be sentencepiece, letter, and more)"
-        },
-    )
-    eval_bleu: bool = field(
-        default=False, metadata={"help": "evaluation with BLEU scores"}
-    )
-    eval_bleu_detok: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "detokenize before computing BLEU (e.g., 'moses'); "
-            "required if using --eval-bleu; use 'space' to disable "
-            "detokenization; see fairseq.data.encoders for other options"
-        },
-    )
-    eval_bleu_detok_args: str = field(
-        default="{}", metadata={"help": "args for building the tokenizer, if needed"}
-    )
-    eval_tokenized_bleu: bool = field(
-        default=False, metadata={"help": "compute tokenized BLEU instead of sacrebleu"}
-    )
-    eval_bleu_remove_bpe: Optional[str] = field(
-        default=None, metadata={"help": "remove BPE before computing BLEU"}
-    )
-    eval_bleu_args: str = field(
-        default="{}",
-        metadata={
-            "help": "generation args for BLUE scoring, e.g., "
-            '\'{"beam": 4, "lenpen": 0.6}\''
-        },
-    )
-    eval_bleu_print_samples: bool = field(
-        default=False, metadata={"help": "print sample generations during validation"}
-    )
-    autoregressive: bool = field(
+class Data2VecAudioTextFinetuning(AudioPretrainingConfig):
+    pretraining: bool = field(
         default=False,
-        metadata={
-            "help": "required for autoregressive decoders (like seq2seq models); "
-            "adds 'prev_output_tokens' to input and appends eos to target"
-        },
+        metadata={"help": ""},
+    )
+    tokens_per_sample: int = field(
+        default=1024,
+        metadata={"help": ""},
+    )
+    # mask_prob: float = field(
+    #     default=0.15,
+    #     metadata={"help": ""},
+    # )
+    refine_interation: int = field(
+        default=5,
+        metadata={"help": ""},
     )
 
 
-@register_task("data2vec_audio_finetuning", dataclass=Data2VecAudioFinetuning)
-class Data2VecAudioFinetuningTask(AudioPretrainingTask):
+@register_task("data2vec_audio_text_finetuning", dataclass=Data2VecAudioTextFinetuning)
+class Data2VecAudioTextFinetuningTask(AudioPretrainingTask):
     """ """
 
-    cfg: Data2VecAudioFinetuning
+    cfg: Data2VecAudioTextFinetuning
 
     def __init__(
         self,
-        cfg: Data2VecAudioFinetuning,
+        cfg: Data2VecAudioTextFinetuning,
     ):
         super().__init__(cfg)
         self.blank_symbol = "<s>"
-
         self.state.add_factory("target_dictionary", self.load_target_dictionary)
+
+        # import pdb; pdb.set_trace()
 
     def load_target_dictionary(self):
         if self.cfg.labels:
             dict_path = os.path.join(self.cfg.data, f"dict.{self.cfg.labels}.txt")
-            # dict_path = os.path.join(self.cfg.data, "dict.txt")
             return Dictionary.load(dict_path)
         return None
 
     def load_dataset(
-        self, split: str, task_cfg: Data2VecAudioFinetuning = None, **kwargs
+        self, split: str, task_cfg: Data2VecAudioTextFinetuning = None, **kwargs
     ):
+        # Use load dataset of Audio Pretraining Task and add some finetuning 
         super().load_dataset(split, task_cfg, **kwargs)
 
         task_cfg = task_cfg or self.cfg
@@ -165,7 +126,9 @@ class Data2VecAudioFinetuningTask(AudioPretrainingTask):
             batch_targets=True,
             process_label=process_label,
             label_len_fn=label_len_fn,
-            add_to_input=task_cfg.get("autoregressive", False),
+            add_to_input=False,
+            bos=self.target_dictionary.bos(),
+            add_bos_and_eos_to_input=True,
             text_compression_level=text_compression_level,
         )
 
@@ -180,186 +143,48 @@ class Data2VecAudioFinetuningTask(AudioPretrainingTask):
     ):
         model.train()
         model.set_num_updates(update_num)
+        # print('update_num',update_num)
+        if self.cfg.pretraining:
+            # model.set_num_updates(update_num)
+            freeze_module_params(model.audio_encoder_ctc)
+            freeze_module_params(model.text_encoder)
+            # pass
+        else:
+            freeze_module_params(model.audio_encoder_ctc)
+            # model.audio_encoder_ctc.eval()
+            freeze_module_params(model.text_encoder)
+            # model.text_encoder.eval()
+
         with torch.autograd.profiler.record_function("forward"):
             with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
                 loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
+
+        # import pdb; pdb.set_trace()
         with torch.autograd.profiler.record_function("backward"):
             optimizer.backward(loss)
         return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
-        if self.cfg.eval_wer and self.cfg.autoregressive:
-            metrics = self._inference_with_wer(self.sequence_generator, sample, model)
-            logging_output["_num_char_errors"] = metrics["num_char_errors"]
-            logging_output["_num_chars"] = metrics["num_chars"]
-            logging_output["_num_word_errors"] = metrics["num_word_errors"]
-            logging_output["_num_words"] = metrics["num_words"]
-        if self.cfg.eval_bleu and self.cfg.autoregressive:
-            metrics = self._inference_with_bleu(self.sequence_generator, sample, model)
-            logging_output["_bleu_sys_len"] = metrics.sys_len
-            logging_output["_bleu_ref_len"] = metrics.ref_len
-            # we split counts into separate entries so that they can be
-            # summed efficiently across workers using fast-stat-sync
-            assert len(metrics.counts) == 4
-            for i in range(4):
-                logging_output[f"_bleu_counts_{i}"] = metrics.counts[i]
-                logging_output[f"_bleu_totals_{i}"] = metrics.totals[i]
         return loss, sample_size, logging_output
 
     def build_model(self, model_cfg: FairseqDataclass, from_checkpoint=False):
         model = super().build_model(model_cfg, from_checkpoint)
-
-        if self.cfg.eval_wer and self.cfg.autoregressive:
-            self.sequence_generator = self.build_generator(
-                [model],
-                self.cfg.eval_wer_config,
-            )
-            if self.cfg.eval_wer_tokenizer:
-                self.tokenizer = encoders.build_tokenizer(self.cfg.eval_wer_tokenizer)
-            else:
-                self.tokenizer = None
-        if self.cfg.eval_bleu and self.cfg.autoregressive:
-            assert self.cfg.eval_bleu_detok is not None, (
-                "--eval-bleu-detok is required if using --eval-bleu; "
-                "try --eval-bleu-detok=moses (or --eval-bleu-detok=space "
-                "to disable detokenization, e.g., when using sentencepiece)"
-            )
-            detok_args = json.loads(self.cfg.eval_bleu_detok_args)
-            self.tokenizer = encoders.build_tokenizer(
-                Namespace(tokenizer=self.cfg.eval_bleu_detok, **detok_args)
-            )
-            gen_args = json.loads(self.cfg.eval_bleu_args)
-            gen_args = Namespace(**gen_args)
-            self.sequence_generator = self.build_generator([model], gen_args)
-
         return model
-
-    def _inference_with_wer(self, generator, sample, model):
-        import editdistance
-
-        # import pdb; pdb.set_trace()
-
-        def decode(toks):
-            s = self.target_dictionary.string(
-                toks.int().cpu(),
-                self.cfg.eval_wer_post_process,
-                escape_unk=True,
-            )
-            if self.tokenizer:
-                s = self.tokenizer.decode(s)
-            return s
-
-        num_word_errors, num_char_errors = 0, 0
-        num_chars, num_words = 0, 0
-        gen_out = self.inference_step(generator, [model], sample, None)
-        for i in range(len(gen_out)):
-            hyp = decode(gen_out[i][0]["tokens"])
-            ref = decode(
-                utils.strip_pad(sample["target"][i], self.target_dictionary.pad()),
-            )
-            num_char_errors += editdistance.eval(hyp, ref)
-            num_chars += len(ref)
-            hyp_words = hyp.split()
-            ref_words = ref.split()
-            num_word_errors += editdistance.eval(hyp_words, ref_words)
-            num_words += len(ref_words)
-
-        return {
-            "num_char_errors": num_char_errors,
-            "num_chars": num_chars,
-            "num_word_errors": num_word_errors,
-            "num_words": num_words,
-        }
-
-    def _inference_with_bleu(self, generator, sample, model):
-        import sacrebleu
-
-        def decode(toks, is_ref):
-            s = self.target_dictionary.string(
-                toks.int().cpu(),
-                self.cfg.eval_bleu_remove_bpe,
-                # The default unknown string in fairseq is `<unk>`, but
-                # this is tokenized by sacrebleu as `< unk >`, inflating
-                # BLEU scores. Instead, we use a somewhat more verbose
-                # alternative that is unlikely to appear in the real
-                # reference, but doesn't get split into multiple tokens.
-                unk_string=("UNKNOWNTOKENINREF" if is_ref else "UNKNOWNTOKENINHYP"),
-            )
-            if self.tokenizer:
-                s = self.tokenizer.decode(s)
-            return s
-
-        gen_out = self.inference_step(generator, [model], sample)
-        hyps, refs = [], []
-        for i in range(len(gen_out)):
-            hyps.append(decode(gen_out[i][0]["tokens"], is_ref=False))
-            refs.append(
-                decode(
-                    utils.strip_pad(sample["target"][i], self.target_dictionary.pad()),
-                    is_ref=True,  # don't count <unk> as matches to the hypo
-                )
-            )
-        if self.cfg.eval_bleu_print_samples:
-            logger.info("H-{} {}".format(sample["id"][0], hyps[0]))
-            logger.info("T-{} {}".format(sample["id"][0], refs[0]))
-
-        eval_tokenization = "none" if self.cfg.eval_tokenized_bleu else "13a"
-        return sacrebleu.corpus_bleu(hyps, [refs], tokenize=eval_tokenization)
 
     def reduce_metrics(self, logging_outputs, criterion):
         super().reduce_metrics(logging_outputs, criterion)
 
-        if self.cfg.eval_wer:
-            zero = torch.scalar_tensor(0.0)
-            num_char_errors = sum(
-                log.get("_num_char_errors", zero) for log in logging_outputs
-            )
-            num_chars = sum(log.get("_num_chars", zero) for log in logging_outputs)
-            num_word_errors = sum(
-                log.get("_num_word_errors", zero) for log in logging_outputs
-            )
-            num_words = sum(log.get("_num_words", zero) for log in logging_outputs)
-            metrics.log_scalar("_num_char_errors", num_char_errors)
-            metrics.log_scalar("_num_chars", num_chars)
-            metrics.log_scalar("_num_word_errors", num_word_errors)
-            metrics.log_scalar("_num_words", num_words)
-            if num_chars > 0:
-                metrics.log_derived(
-                    "uer",
-                    lambda meters: meters["_num_char_errors"].sum
-                    * 100.0
-                    / meters["_num_chars"].sum
-                    if meters["_num_chars"].sum > 0
-                    else float("nan"),
-                )
-            if num_words > 0:
-                metrics.log_derived(
-                    "wer",
-                    lambda meters: meters["_num_word_errors"].sum
-                    * 100.0
-                    / meters["_num_words"].sum
-                    if meters["_num_words"].sum > 0
-                    else float("nan"),
-                )
-        if self.cfg.eval_bleu:
-            len_keys = ["_bleu_sys_len", "_bleu_ref_len"]
-            count_keys = [f"_bleu_counts_{i}" for i in range(4)]
-            total_keys = [f"_bleu_totals_{i}" for i in range(4)]
-            for k in len_keys + count_keys + total_keys:
-                metrics.log_scalar(k, sum(log.get(k, 0) for log in logging_outputs))
 
-            import sacrebleu
+def freeze_module_params(m):
+    if m is not None:
+        for p in m.parameters():
+            p.requires_grad = False
 
-            metrics.log_derived(
-                "bleu",
-                lambda meters: sacrebleu.compute_bleu(
-                    correct=[meters[k].sum for k in count_keys],
-                    total=[meters[k].sum for k in total_keys],
-                    sys_len=meters["_bleu_sys_len"].sum,
-                    ref_len=meters["_bleu_ref_len"].sum,
-                    smooth_method="exp",
-                ).score,
-            )
+
+def check_model_freezed(m):
+    if m is not None:
+        for n, p in m.named_parameters():
+            print(n,p.requires_grad)

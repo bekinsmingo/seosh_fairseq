@@ -514,6 +514,8 @@ class Wav2VecEncoder(FairseqEncoder):
         ft = self.freeze_finetune_updates <= self.num_updates
 
         with torch.no_grad() if not ft else contextlib.ExitStack():
+
+            # import pdb; pdb.set_trace()
             res = self.w2v_model.extract_features(**w2v_args)
 
             x = res["x"]
@@ -526,6 +528,15 @@ class Wav2VecEncoder(FairseqEncoder):
 
         if self.proj:
             x = self.proj(x)
+
+        '''
+        (Pdb) x.size()
+        torch.Size([538, 7, 768])
+        (Pdb) self.proj
+        Linear(in_features=1024, out_features=768, bias=True)
+        '''
+
+        # import pdb; pdb.set_trace()
 
         return {
             "encoder_out": x,  # T x B x C
@@ -708,6 +719,33 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
         inner_states = [x]
 
+        import pdb; pdb.set_trace()
+        '''
+        (Pdb) prev_output_tokens.eq(self.padding_idx)
+        tensor([[False, False, False,  ...,  True,  True,  True],
+                [False, False, False,  ...,  True,  True,  True],
+                [False, False, False,  ..., False, False, False],
+                ...,
+                [False, False, False,  ...,  True,  True,  True],
+                [False, False, False,  ...,  True,  True,  True],
+                [False, False, False,  ...,  True,  True,  True]], device='cuda:0')
+        (Pdb) prev_output_tokens.eq(self.padding_idx).size()
+        torch.Size([7, 209])
+        (Pdb) x.size()
+        torch.Size([209, 7, 768])
+        (Pdb) encoder_out["encoder_out"].size()
+        torch.Size([538, 7, 768])
+        (Pdb) encoder_out["padding_mask"]
+        (Pdb) self_attn_mask=self.buffered_future_mask(x) if incremental_state is None else None
+        (Pdb) self_attn_mask
+        tensor([[0., -inf, -inf,  ..., -inf, -inf, -inf],
+                [0., 0., -inf,  ..., -inf, -inf, -inf],
+                [0., 0., 0.,  ..., -inf, -inf, -inf],
+                ...,
+                [0., 0., 0.,  ..., 0., -inf, -inf],
+                [0., 0., 0.,  ..., 0., 0., -inf],
+                [0., 0., 0.,  ..., 0., 0., 0.]], device='cuda:0', dtype=torch.float16)
+        '''
         # decoder layers
         self_attn_padding_mask = None
         if prev_output_tokens.eq(self.padding_idx).any():
@@ -720,9 +758,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                     encoder_out["encoder_out"] if encoder_out is not None else None,
                     encoder_out["padding_mask"] if encoder_out is not None else None,
                     incremental_state,
-                    self_attn_mask=self.buffered_future_mask(x)
-                    if incremental_state is None
-                    else None,
+                    self_attn_mask=self.buffered_future_mask(x) if incremental_state is None else None,
                     self_attn_padding_mask=self_attn_padding_mask,
                 )
                 inner_states.append(x)

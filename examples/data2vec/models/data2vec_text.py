@@ -115,6 +115,8 @@ class Data2VecTextModel(FairseqEncoderModel):
             src_tokens, target_tokens, features_only, return_all_hiddens, **kwargs
         )
 
+        # import pdb; pdb.set_trace()
+
         if isinstance(res, tuple):
             x, extra = res
         else:

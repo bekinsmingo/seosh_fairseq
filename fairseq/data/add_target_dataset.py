@@ -20,6 +20,8 @@ class AddTargetDataset(BaseWrapperDataset):
         process_label=None,
         label_len_fn=None,
         add_to_input=False,
+        bos=None,
+        add_bos_and_eos_to_input=False,
         text_compression_level=TextCompressionLevel.none,
     ):
         super().__init__(dataset)
@@ -30,6 +32,8 @@ class AddTargetDataset(BaseWrapperDataset):
         self.process_label = process_label
         self.label_len_fn = label_len_fn
         self.add_to_input = add_to_input
+        self.bos = bos
+        self.add_bos_and_eos_to_input = add_bos_and_eos_to_input
         self.text_compressor = TextCompressor(level=text_compression_level)
 
     def get_label(self, index, process_fn=None):
@@ -52,7 +56,10 @@ class AddTargetDataset(BaseWrapperDataset):
         if len(collated) == 0:
             return collated
         indices = set(collated["id"].tolist())
-        target = [s["label"] for s in samples if s["id"] in indices]
+        if self.add_bos_and_eos_to_input:
+            target = [torch.cat((torch.LongTensor([self.bos]), s['label'],torch.LongTensor([self.eos]))) for s in samples if s["id"] in indices]
+        else:
+            target = [s["label"] for s in samples if s["id"] in indices]
 
         if self.batch_targets:
             collated["target_lengths"] = torch.LongTensor([len(t) for t in target])
@@ -62,7 +69,7 @@ class AddTargetDataset(BaseWrapperDataset):
             collated["ntokens"] = sum([len(t) for t in target])
 
         collated["target"] = target
-
+        # import pdb; pdb.set_trace()
         if self.add_to_input:
             eos = target.new_full((target.size(0), 1), self.eos)
             collated["target"] = torch.cat([target, eos], dim=-1).long()
@@ -70,6 +77,7 @@ class AddTargetDataset(BaseWrapperDataset):
                 [eos, target], dim=-1
             ).long()
             collated["ntokens"] += target.size(0)
+            # import pdb; pdb.set_trace()
         return collated
 
     def filter_indices_by_size(self, indices, max_sizes):

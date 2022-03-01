@@ -1,5 +1,5 @@
 
-from . import data2vec_audio_finetuning, cross_entropy_for_data2vec
+from . import data2vec_audio_finetuning, cross_entropy_for_data2vec, model_criterion_for_data2vec
 # from .models import Data2VecAudioConfig
 
 # import importlib

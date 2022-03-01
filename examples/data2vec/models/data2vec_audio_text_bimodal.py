@@ -90,6 +90,8 @@ from transformers import RobertaTokenizer
 
 
 from fairseq.modules import EMAModule, EMAModuleConfig
+import torch.distributed as dist
+import time
 
 # from fairseq.models.roberta.alignment_utils import align_bpe_to_words
 
@@ -102,7 +104,14 @@ from fairseq.modules import EMAModule, EMAModuleConfig
 @dataclass
 # class Data2VecAudioTextConfig(Wav2Vec2Config):
 class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
+
+    ## 1. -> Wav2Vec2AsrConfig for Wav2Vec-CTC Encdoer
+
+    ## 2. for Transformer Decoder Config
     decoder_embed_dim: int = field(
+        default=768, metadata={"help": "decoder embedding dimension"}
+    )
+    decoder_output_dim: int = field(
         default=768, metadata={"help": "decoder embedding dimension"}
     )
     decoder_ffn_embed_dim: int = field(
@@ -144,7 +153,7 @@ class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
         },
     )
     max_target_positions: int = field(
-        default=2048, metadata={"help": "max target positions"}
+        default=512, metadata={"help": "max target positions"}
     )
     share_decoder_input_output_embed: bool = field(
         default=False, metadata={"help": "share decoder input and output embeddings"}
@@ -158,6 +167,22 @@ class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
         default=MISSING, metadata={"help": "path to roberta model"}
     )
 
+    adaptive_softmax_cutoff: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "comma separated list of adaptive softmax cutoff points. "
+            "Must be used with adaptive_loss criterion"
+        },
+    )
+    adaptive_softmax_dropout: float = field(
+        default=0,
+        metadata={"help": "sets adaptive softmax dropout for the tail projections"},
+    )
+    adaptive_softmax_factor: float = field(
+        default=4, metadata={"help": "adaptive input factor"}
+    )
+
+    ### 3. for EMA Training configs
 
     # l1 smooth loss의 하이퍼 파라메터
     loss_beta: float = field(
@@ -172,7 +197,7 @@ class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
 
     # 상위 k 개 레이어의 output을 averaging해서 타겟으로 사용함. 
     average_top_k_layers: int = field(
-        default=8, metadata={"help": "how many layers to average"}
+        default=4, metadata={"help": "how many layers to average"}
     )
 
     layer_norm_target_layer: bool = False
@@ -210,6 +235,24 @@ class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
         metadata={"help": "stop training if prediction var falls below this"},
     )
 
+    ema_pretraining: bool = field(
+        default=False,
+        metadata={"help": "tmp"},
+    )
+
+    head_layers: int = 2
+
+    # load_checkpoint_heads: bool = field(
+    #     default=False,
+    #     metadata={"help": "(re-)register and load heads when loading checkpoints"},
+    # )
+
+    # ema_transformer_layers_only: bool = field(
+    #     default=True,
+    #     metadata={"help": "whether to momentum update only the transformer layers"},
+    # )
+
+
 from examples.speech_recognition.new.decoders.decoder_config import (
     DecoderConfig,
     FlashlightDecoderConfig,
@@ -237,6 +280,18 @@ def get_annealed_rate(start, end, curr_step, total_steps):
     return end - r * pct_remaining
 
 
+def freeze_module_params(m):
+    if m is not None:
+        for p in m.parameters():
+            p.requires_grad = False
+
+
+def check_model_freezed(m):
+    if m is not None:
+        for n, p in m.named_parameters():
+            print(n,p.requires_grad)
+
+
 @register_model("data2vec_bimodal", dataclass=Data2VecAudioTextConfig)
 class Data2VecAudioTextModel(BaseFairseqModel):
     def __init__(self, cfg: Data2VecAudioTextConfig, audio_encoder_ctc, asr_eval_decoder, asr_embedding_layer, asr_tgt_dict, text_encoder, roberta_src_dict, decoder):
@@ -244,7 +299,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         self.cfg = cfg
 
-        ### Wav2Vec2 Encoder
+        ## Wav2Vec2 Encoder
         self.device = torch.device("cuda")
         self.audio_encoder_ctc = audio_encoder_ctc.to(self.device)
         # self.audio_encoder = self.audio_encoder_ctc.w2v_encoder.w2v_model.to(self.device)
@@ -254,7 +309,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         self.asr_tgt_dict = asr_tgt_dict
         self.mask_token = self.asr_tgt_dict.bos_index
 
-        ### RoBERTa Encoder
+        ## RoBERTa Encoder
         self.text_encoder = text_encoder.to(self.device)
         self.roberta_src_dict = roberta_src_dict
         self.roberta_mask_idx = self.roberta_src_dict.index("<mask>")
@@ -262,12 +317,10 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         self.roberta_tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
         self.bpe = encoders.build_bpe("gpt2")
         
-        ### Transformer Decoder for bimodal training
+        ## Transformer Decoder for bimodal training
         self.decoder = decoder.to(self.device)
 
-        # import pdb; pdb.set_trace()
-
-        ### ema training
+        ## ema training
         self.ema = None
 
         self.average_top_k_layers = cfg.average_top_k_layers # 8
@@ -292,10 +345,33 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         self.num_updates = 0
 
-        self.final_proj = nn.Linear(self.cfg.decoder_embed_dim, self.cfg.decoder_embed_dim) 
-        
+        # self.final_proj = nn.Linear(self.cfg.decoder_embed_dim, self.cfg.decoder_embed_dim) 
 
-        # import pdb; pdb.set_trace()
+        self.ema_pretraining = cfg.ema_pretraining
+
+        embed_dim = self.cfg.decoder_embed_dim
+        curr_dim = embed_dim
+        projs = []
+        for i in range(self.cfg.head_layers - 1):
+            next_dim = embed_dim * 2 if i == 0 else curr_dim
+            projs.append(nn.Linear(curr_dim, next_dim))
+            projs.append(nn.GELU())
+            curr_dim = next_dim
+
+        projs.append(nn.Linear(curr_dim, embed_dim))
+        self.regression_head = nn.Sequential(*projs)
+
+        if self.ema_pretraining:
+            pass
+        else:
+            logger.info("===============================================================")
+            logger.info("| EMA Pretraining mode? {}".format(self.ema_pretraining))
+            logger.info("| freezing audio encoder and text encoder...")
+            freeze_module_params(self.audio_encoder_ctc)
+            freeze_module_params(self.text_encoder)
+            logger.info("| Done !")
+            logger.info("===============================================================")
+        
 
     def make_ema_teacher(self):
         ema_config = EMAModuleConfig(
@@ -310,24 +386,15 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             if 'layers' not in k :
                 # skip_keys.add(k.split('.weight')[0])
                 skip_keys.add(k)
+            else:
+                if 'norm' in k:
+                    skip_keys.add(k)
 
         self.ema = EMAModule(
             self.decoder,
             ema_config,
             skip_keys=skip_keys
         )
-
-        # import pdb; pdb.set_trace()
-
-        # if self.cfg.ema_layers_only:
-        #     self.cfg.ema_transformer_only = True
-        #     for k, _ in self.encoder.pos_conv.named_parameters():
-        #         skip_keys.add(f"pos_conv.{k}")
-        # self.ema = EMAModule(
-        #     self.encoder if self.cfg.ema_transformer_only else self,
-        #     ema_config,
-        #     skip_keys=skip_keys,
-        # )
 
         # self.ema = EMAModule(
         #     self,
@@ -338,31 +405,53 @@ class Data2VecAudioTextModel(BaseFairseqModel):
     def set_num_updates(self, num_updates):
         super().set_num_updates(num_updates)
 
-        if self.ema is None and self.final_proj is not None:
-            logger.info(f"making ema teacher")
-            self.make_ema_teacher()
-        elif self.training and self.ema is not None:
-            if self.cfg.ema_decay != self.cfg.ema_end_decay:
-                if num_updates >= self.cfg.ema_anneal_end_step:
-                    decay = self.cfg.ema_end_decay
-                else:
-                    decay = get_annealed_rate(
-                        self.cfg.ema_decay,
-                        self.cfg.ema_end_decay,
-                        num_updates,
-                        self.cfg.ema_anneal_end_step,
-                    )
-                self.ema.set_decay(decay)
-            if self.ema.get_decay() < 1:
-                # self.ema.step(self.encoder if self.cfg.ema_transformer_only else self)
-                self.ema.step(self.decoder)
+        # import pdb; pdb.set_trace()
+
+        if self.ema_pretraining:
+            # if self.ema is None and self.final_proj is not None:
+            #     logger.info(f"making ema teacher")
+            #     self.make_ema_teacher()
+            if self.ema is None and self.regression_head is not None:
+                logger.info(f"making ema teacher")
+                self.make_ema_teacher()
+            elif self.training and self.ema is not None:
+                if self.cfg.ema_decay != self.cfg.ema_end_decay:
+                    if num_updates >= self.cfg.ema_anneal_end_step:
+                        decay = self.cfg.ema_end_decay
+                    else:
+                        decay = get_annealed_rate(
+                            self.cfg.ema_decay,
+                            self.cfg.ema_end_decay,
+                            num_updates,
+                            self.cfg.ema_anneal_end_step,
+                        )
+                    self.ema.set_decay(decay)
+                if self.ema.get_decay() < 1:
+                    # self.ema.step(self.encoder if self.cfg.ema_transformer_only else self)
+                    self.ema.step(self.decoder)
+        else:
+            pass
 
         self.num_updates = num_updates
 
+    def remove_pretraining_modules(self, last_layer=None):
+        self.regression_head = None
+        self.ema = None
+
+
+        # if last_layer is not None:
+        #     self.encoder.sentence_encoder.layers = nn.ModuleList(
+        #         l
+        #         for i, l in enumerate(self.encoder.sentence_encoder.layers)
+        #         if i <= last_layer
+        #     )
+        #     self.encoder.sentence_encoder.layer_norm = None
 
     @classmethod
     def build_model(cls, cfg: Data2VecAudioTextConfig, task: FairseqTask):
         """Build a new model instance."""
+
+        # import pdb; pdb.set_trace()
 
         src_dict, tgt_dict = task.source_dictionary, task.target_dictionary
 
@@ -372,36 +461,25 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             emb = Embedding(num_embeddings, embed_dim, padding_idx)
             return emb
 
-        ### Wav2Vec2 Encoder
+        ## 1. Wav2Vec2 Encoder
         audio_encoder_ctc, w2v_encoder_embed_dim, asr_tgt_dict = cls.build_audio_encoder(cfg)
         asr_eval_decoder = cls.build_asr_eval_decoder(asr_tgt_dict)
         asr_embedding_layer = build_embedding(asr_tgt_dict, cfg.decoder_embed_dim)
 
-        ### RoBERTa Encoder
+        ## 2. RoBERTa Encoder
         text_encoder, roberta_src_dict = cls.build_text_encoder(cfg)
 
-        ### Transformer Decoder for bimodal training
-        # decoder = cls.build_decoder(cfg, w2v_encoder_embed_dim, tgt_dict, asr_embedding_layer)
+        # import pdb; pdb.set_trace()
+
+        ## 3. Transformer Decoder for bimodal training
         decoder = cls.build_decoder(cfg, w2v_encoder_embed_dim, tgt_dict, text_encoder.encoder.sentence_encoder.embed_tokens)
+        # decoder = cls.build_decoder(cfg, len(asr_tgt_dict), tgt_dict, text_encoder.encoder.sentence_encoder.embed_tokens)
 
         return Data2VecAudioTextModel(cfg, audio_encoder_ctc, asr_eval_decoder, asr_embedding_layer, asr_tgt_dict, text_encoder, roberta_src_dict, decoder)
 
 
     @classmethod
     def build_audio_encoder(cls, cfg):
-
-        # state = checkpoint_utils.load_checkpoint_to_cpu(cfg.w2v_ctc_path)
-        # w2v_args = state.get("cfg", None)
-        # cfg.w2v_args = w2v_args
-        # import pdb; pdb.set_trace()
-        # task = tasks.setup_task(state['args'])
-        # model = task.build_model(state['args'], from_checkpoint=True)
-        # model.remove_pretraining_modules()
-        # import pdb; pdb.set_trace()
-
-        # w2v_encoder = Wav2VecEncoder(cfg, len(task.target_dictionary))
-        # import pdb; pdb.set_trace()
-
         overrides = {
             "criterion": 'ctc',
             "data": '/workspace/data2vec/only_dict_for_w2v2', 
@@ -409,38 +487,6 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             "scoring": 'wer', 
             "task": 'audio_finetuning'
         }
-
-        # overrides = {
-        #     "dropout": cfg.dropout,
-        #     "activation_dropout": cfg.activation_dropout,
-        #     "dropout_input": cfg.dropout_input,
-        #     "attention_dropout": cfg.attention_dropout,
-        #     "mask_length": cfg.mask_length,
-        #     "mask_prob": cfg.mask_prob,
-        #     "require_same_masks": getattr(cfg, "require_same_masks", True),
-        #     "pct_holes": getattr(cfg, "mask_dropout", 0),
-        #     "mask_selection": cfg.mask_selection,
-        #     "mask_other": cfg.mask_other,
-        #     "no_mask_overlap": cfg.no_mask_overlap,
-        #     "mask_channel_length": cfg.mask_channel_length,
-        #     "mask_channel_prob": cfg.mask_channel_prob,
-        #     "mask_channel_before": cfg.mask_channel_before,
-        #     "mask_channel_selection": cfg.mask_channel_selection,
-        #     "mask_channel_other": cfg.mask_channel_other,
-        #     "no_mask_channel_overlap": cfg.no_mask_channel_overlap,
-        #     "encoder_layerdrop": cfg.layerdrop,
-        #     "feature_grad_mult": cfg.feature_grad_mult,
-        #     "checkpoint_activations": cfg.checkpoint_activations,
-        #     "offload_activations": cfg.offload_activations,
-        #     "min_params_to_wrap": cfg.min_params_to_wrap,
-        #     "criterion": 'ctc',
-        #     "data": '/workspace/librispeech_model/am/fairseq_audio_data2', 
-        #     "post_process": 'letter', 
-        #     "scoring": 'wer', 
-        #     "task": 'audio_finetuning'
-        # }
-
-        # Load ensemble
         logger.info("| loading audio model from {}".format(cfg.w2v_ctc_path))
         models, saved_cfg, task = checkpoint_utils.load_model_ensemble_and_task(
             utils.split_paths(cfg.w2v_ctc_path, separator="\\"),
@@ -448,32 +494,20 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             strict=True
         )
         model = models[0]
-
-        # import pdb; pdb.set_trace()
-
         w2v_encoder_embed_dim = saved_cfg.model.w2v_args.model.encoder_embed_dim
-
-        # import pdb; pdb.set_trace()
-            
         return model, w2v_encoder_embed_dim, task.target_dictionary
 
     @classmethod
     def build_asr_eval_decoder(cls, tgt_dict):
         decoding = DecodingConfig()
-        # return W2lViterbiDecoder(args, tgt_dict)
         return Decoder(decoding, tgt_dict)
 
     @classmethod
     def build_text_encoder(cls, cfg):
-
         overrides = {
             "task": 'language_modeling',
             "data": '/workspace/data2vec/roberta.base'
         }
-
-        from fairseq.data import encoders
-
-        # Load ensemble
         logger.info("| loading text model from {}".format(cfg.roberta_path))
         models, saved_cfg, task = checkpoint_utils.load_model_ensemble_and_task(
             utils.split_paths(cfg.roberta_path, separator="\\"),
@@ -482,69 +516,84 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             # state=state
         )
         model = models[0]
-
         return model, task.source_dictionary
 
-    @classmethod
-    def build_decoder(cls, cfg: Data2VecAudioTextConfig, w2v_encoder_embed_dim, tgt_dict, embed_tokens):
-        # return TransformerDecoder(cfg, tgt_dict, embed_tokens)
-        # return FairseqNATDecoder(cfg, tgt_dict, embed_tokens)
-        return TransformerDecoderBase(cfg, w2v_encoder_embed_dim, tgt_dict, embed_tokens)
+    def get_greedy_decoding_results(self, ctc_emissions):
+        """
+        Args:
+            ctc_emissions, 
 
-    def forward(self, sample):
-
-
-        #############################################################
-        ##########    Get CTC emission and greedy output    #########
-        #############################################################
-
-        # for mask-ctc training
-        target = sample['target']
-        target_len = sample['target_lengths']
-        input = sample['net_input']
-
-        # res = self.audio_encoder_ctc.w2v_encoder.w2v_model.extract_features(**input)
-        cnn_outputs = self.audio_encoder_ctc.w2v_encoder.w2v_model.extract_features(**input, cnn_features_only=True, mask=False)
-        res = self.audio_encoder_ctc.w2v_encoder.w2v_model.encoder(cnn_outputs['x'],cnn_outputs['padding_mask'])
-        x = res[0]
-
-        # import pdb; pdb.set_trace()
-
-        # B x T x C -> T x B x C
-        x = x.transpose(0, 1)
-        x = self.audio_encoder_ctc.w2v_encoder.final_dropout(x) # torch.Size([740, 1, 1024])
-        acoustic_representation = x
-
-        ctc_emissions = self.audio_encoder_ctc.w2v_encoder.proj(x) # torch.Size([1, 740, 32])
-        ctc_emissions = self.audio_encoder_ctc.w2v_encoder.w2v_model.get_normalized_probs(ctc_emissions,log_probs=True)
-        ctc_emissions = ctc_emissions.transpose(0, 1) # torch.Size([1, 740, 32])
-
-
-
-        # # #############################################################
-        # # ###################    Make Mask Input    ###################
-        # # #############################################################
-
+        Returns:
+            greedy decoding results
+        """
         transcripts = self.asr_eval_decoder.decode(ctc_emissions)
+        # <examples.speech_recognition.new.decoders.viterbi_decoder.ViterbiDecoder object at 0x7f793c32d520>
         transcripts = [
             self.process_sentence(transcripts[b][0])
             for b in range(ctc_emissions.size(0))
         ]
 
         # import pdb; pdb.set_trace()
+        return transcripts
 
-        # make masked inputs for decoder using forced alignment probability
+
+    def get_ctc_emissions(self, input):
+        """
+        Args:
+            wav_input, 
+            target 
+
+        Returns:
+            w2v2 cnn outputs,
+            ctc_emissions,
+            greedy decoding results
+        """
+
+        # res = self.audio_encoder_ctc.w2v_encoder.w2v_model.extract_features(**input)
+        cnn_outputs = self.audio_encoder_ctc.w2v_encoder.w2v_model.extract_features(**input, cnn_features_only=True, mask=False)
+        x, layer_results = self.audio_encoder_ctc.w2v_encoder.w2v_model.encoder(cnn_outputs['x'],cnn_outputs['padding_mask'])
+
+        # import pdb; pdb.set_trace()
+
+        # B x T x C -> T x B x C
+        x = x.transpose(0, 1)
+        x = self.audio_encoder_ctc.w2v_encoder.final_dropout(x) # torch.Size([740, 1, 1024])
+        ctc_emissions = self.audio_encoder_ctc.w2v_encoder.proj(x) # torch.Size([1, 740, 32])
+
+        w2v2_encoder_results = {
+            "encoder_out": x,
+            "padding_mask": cnn_outputs['padding_mask'],
+            "layer_results": layer_results,
+        }
+
+        ctc_emissions = self.audio_encoder_ctc.w2v_encoder.w2v_model.get_normalized_probs(ctc_emissions,log_probs=True)
+        ctc_emissions = ctc_emissions.transpose(0, 1) # torch.Size([1, 740, 32])
+
+        # import pdb; pdb.set_trace()
+
+        return cnn_outputs, ctc_emissions, w2v2_encoder_results
+
+    def get_mask_indices_for_audio_and_text(self, ctc_emissions, transcripts, cnn_outputs):
+        """
+        Args:
+            ctc_emissions, 
+            target,
+            cnn_outputs
+
+        Returns:
+            mask indices for roberta
+            mask indices for cnn outputs
+            greedy decoding results (transcripts)
+        """
+
         mask_indices = []
         cnn_output_mask_indices = []
-        # for emission, transcript in zip(ctc_emissions, target):
-        for idx, (emission, transcript, cnn_output) in enumerate(zip(ctc_emissions, transcripts, cnn_outputs['x'])):
+
+        for idx, (emission, transcript, cnn_output) in enumerate(zip(ctc_emissions, transcripts, cnn_outputs)):
             transcript = transcript.replace(' ','|') + ('|')
             tokens = [self.asr_tgt_dict.indices[c] for c in transcript]
-            # tokens = transcript.cpu().tolist()
             emission = emission.cpu()
             sent = transcript
-            # sent = post_process(self.asr_tgt_dict.string(transcript), 'letter').replace(' ','|') + ('|')
-            # import pdb; pdb.set_trace()
             trellis = get_trellis(emission, tokens)
             path = backtrack(trellis, emission, tokens)
             segments = merge_repeats(path, sent)
@@ -570,18 +619,24 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             mask_indices.append(mask_indice)
             cnn_output_mask_indices.append(cnn_output_mask)
 
-        cnn_output_mask_indices = (torch.stack(cnn_output_mask_indices).to(self.device)==1)
         # import pdb; pdb.set_trace()
 
-        roberta_input, roberta_input_mask, roberta_input_length = self.encode_batch_sent_for_roberta(transcripts) # fairseq roberta tokenizer
+        cnn_output_mask_indices = (torch.stack(cnn_output_mask_indices).to(self.device)==1)
+        return mask_indices, cnn_output_mask_indices
+
+    def apply_mask_for_audio(self, cnn_outputs, cnn_output_mask_indices):
+        masked_cnn_output, padding_mask = self.audio_encoder_ctc.w2v_encoder.w2v_model.apply_mask(cnn_outputs['x'],cnn_outputs['padding_mask'],mask_indices=cnn_output_mask_indices)
+        return masked_cnn_output, padding_mask
+
+    def apply_mask_for_text(self, transcripts, roberta_input, roberta_input_length, mask_indices):
         post_processed_transcript = self.lower_and_punc(transcripts)
         bpe_mask = torch.zeros_like(roberta_input, dtype=torch.long)
 
         for idx, (bpe_sent, bpe_length, sent) in enumerate(zip(roberta_input, roberta_input_length, post_processed_transcript)):
-            # import pdb; pdb.set_trace()
             bpe_sent = bpe_sent[:bpe_length]
             alignment = align_bpe_to_words(self.roberta_src_dict, self.bpe, bpe_sent, sent)
             alignment_mask = (torch.Tensor(mask_indices[idx]) == 0)
+            # import pdb; pdb.set_trace()
             masked_alignment = torch.LongTensor(alignment).masked_fill(alignment_mask,0)
             _ = torch.stack([x[0] for x in groupby(masked_alignment)])
             confident_idx = torch.unique(_)[1:]
@@ -589,52 +644,231 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         roberta_input = roberta_input.masked_fill(torch.logical_not(bpe_mask),self.roberta_mask_idx).to(self.device)
 
-        import pdb; pdb.set_trace()
-
-        # text_representation = self.asr_embedding_layer(torch.LongTensor(decoder_inputs).cuda())
-        # decoder_out, _ = self.decoder(prev_output_tokens = text_representation, encoder_out = acoustic_representation)
-
-        # import pdb; pdb.set_trace()
-
-        #############################################################
-        #######################    Roberta    #######################
-        #############################################################
+        return roberta_input
 
 
-        # # self.roberta_tokenizer(transcripts) # huggingface roberta tokenizer
-        # roberta_input, _, _ = self.encode_batch_sent_for_roberta(transcripts) # fairseq roberta tokenizer
-        # roberta_input = roberta_input.to(self.device)
-        # text_representation = self.text_encoder(roberta_input, features_only=True)[0] # torch.Size([1, 44, 768])
-
-        # decoder_out, _ = self.decoder(prev_output_tokens = text_representation, encoder_out = acoustic_representation)
-        # # encoder-side attention, should be of size T x B x C
-
-
-        #############################################################
-        #######################    naive    #######################
-        #############################################################
+    @classmethod
+    def build_decoder(cls, cfg: Data2VecAudioTextConfig, w2v_encoder_embed_dim, tgt_dict, embed_tokens):
+        # return TransformerDecoder(cfg, tgt_dict, embed_tokens)
+        # return FairseqNATDecoder(cfg, tgt_dict, embed_tokens)
+        # return TransformerDecoderBase(cfg, w2v_encoder_embed_dim, tgt_dict, embed_tokens)
+        return TransformerDecoderBase(cfg, w2v_encoder_embed_dim, tgt_dict, embed_tokens)
 
 
-        # text_representation = self.text_encoder.encoder.sentence_encoder.embed_tokens(target)
+    def forward(self, sample):
 
-        uniform_mask = torch.FloatTensor(target.size()).uniform_() > 0.85
-        text_representation = self.text_encoder(target.masked_fill(uniform_mask.to(self.device),self.roberta_mask_idx), features_only=True)[0]
+        target = sample['target']
+        target_padding_mask = (target==self.roberta_src_dict.pad())
+        target_bos_marker=(sample['target']==self.roberta_src_dict.bos())
+        target_eos_marker=(sample['target']==self.roberta_src_dict.eos())
+        target_len = sample['target_lengths']
+        input = sample['net_input']
 
-        import pdb; pdb.set_trace()
+        if self.ema is None:
+            ##############################################################################################################
+            ###### for ASR finetuning, we hv to use gold transcription because of compute loss non-autoregressively ######
+            ##############################################################################################################
+            cnn_outputs, ctc_emissions, w2v2_encoder_results = self.get_ctc_emissions(input)
+            transcripts = None
+            if self.training:
+                # transcripts = self.get_greedy_decoding_results(ctc_emissions)
+                uniform_mask = torch.FloatTensor(target.size()).uniform_() > 0.65
+                target = target.masked_fill(uniform_mask.to(self.device),self.roberta_mask_idx)
+                target = target.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
+                target = target.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
+                
+                roberta_output = self.text_encoder(target.masked_fill(uniform_mask.to(self.device),self.roberta_mask_idx), features_only=True)[0]
+                decoder_out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=target_padding_mask)
+                # import pdb; pdb.set_trace()
+            else:
+                # get ctc output and make bpe roberta sentence
+                transcripts = self.get_greedy_decoding_results(ctc_emissions)
+                roberta_input, roberta_input_mask, roberta_input_length = self.encode_batch_sent_for_roberta(transcripts)
 
-        # cnn_outputs['x'].masked_fill(cnn_output_mask_indices, self.audio_encoder.mask_emb)
-        masked_cnn_output, padding_mask = self.audio_encoder_ctc.w2v_encoder.w2v_model.apply_mask(cnn_outputs['x'],cnn_outputs['padding_mask'],mask_indices=cnn_output_mask_indices)
-        res = self.audio_encoder_ctc.w2v_encoder.w2v_model.encoder(masked_cnn_output, padding_mask)
-        x, padding_mask, layer_results = res[0], cnn_outputs['padding_mask'], res[1]
+                # padding mask for roberta input
+                mask_indices, _ = self.get_mask_indices_for_audio_and_text(ctc_emissions, transcripts, cnn_outputs['x'])
+                target_padding_mask = torch.logical_not(roberta_input_mask).to(self.device)
+                target_bos_marker=(roberta_input==self.roberta_src_dict.bos()).to(self.device)
+                target_eos_marker=(roberta_input==self.roberta_src_dict.eos()).to(self.device)
 
-        # import pdb; pdb.set_trace()
+                masked_roberta_input = self.apply_mask_for_text(transcripts, roberta_input, roberta_input_length, mask_indices)
+                masked_roberta_input = masked_roberta_input.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
+                masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
 
-        # text_representation = self.text_encoder(roberta_input, features_only=True)[0]
-        decoder_out, _ = self.decoder(prev_output_tokens = text_representation, encoder_out = acoustic_representation)
+                num_iter = 10
+                for i in range(num_iter):
+                    roberta_output = self.text_encoder(masked_roberta_input, features_only=True)[0]
+                    decoder_out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=torch.logical_not(roberta_input_mask).to(self.device))
+                    prob, pred=F.softmax(decoder_out,dim=-1).max(dim=-1)
+                    # import pdb; pdb.set_trace()
+                    logger.info("| {} th average prob of decoder outs are {}".format(i, prob.masked_fill(target_padding_mask,0).sum()/torch.sum(roberta_input_length)))
+                    if i==(num_iter-1):
+                        break;
+                    confident_idx = prob > 0.7
+                    pred = pred.masked_fill(torch.logical_not(confident_idx),self.roberta_mask_idx).to(self.device)
+                    masked_roberta_input = pred.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
+                    masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
+        else:
+            ############################################################
+            ###### for EMA training, we need to use masked inputs ######
+            ############################################################
 
-        # if target.size(0) == 3 : import pdb; pdb.set_trace()
+            # 1. Get CTC emission and greedy output
+            cnn_outputs, ctc_emissions, w2v2_encoder_results = self.get_ctc_emissions(input)
+            transcripts = self.get_greedy_decoding_results(ctc_emissions)
 
-        return decoder_out
+            # 2. Get BPE roberta sentence input
+            roberta_input, roberta_input_mask, roberta_input_length = self.encode_batch_sent_for_roberta(transcripts)
+
+            # 3. Get Masked indices for Roberta Inputs (text)
+            mask_indices, cnn_output_mask_indices = self.get_mask_indices_for_audio_and_text(ctc_emissions, transcripts, cnn_outputs['x'])
+            target_padding_mask = torch.logical_not(roberta_input_mask).to(self.device)
+            target_bos_marker=(roberta_input==self.roberta_src_dict.bos()).to(self.device)
+            target_eos_marker=(roberta_input==self.roberta_src_dict.eos()).to(self.device)
+
+            masked_roberta_input = self.apply_mask_for_text(transcripts, roberta_input, roberta_input_length, mask_indices)
+            masked_roberta_input = masked_roberta_input.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
+            masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
+
+            # 4. Get Masked Inputs for w2v2 (audio)
+            masked_cnn_output, padding_mask = self.apply_mask_for_audio(cnn_outputs, cnn_output_mask_indices)
+
+            # 5. feeding masked inputs to w2v2 and roberta each
+            x_audio, layer_results = self.audio_encoder_ctc.w2v_encoder.w2v_model.encoder(masked_cnn_output, padding_mask)
+            x_audio = x_audio.transpose(0, 1)
+            x_audio = self.audio_encoder_ctc.w2v_encoder.final_dropout(x_audio)
+            masked_w2v2_encoder_results = {
+                "encoder_out": x_audio,
+                "padding_mask": cnn_outputs['padding_mask'],
+                "layer_results": layer_results,
+            }
+            masked_roberta_output = self.text_encoder(masked_roberta_input, features_only=True)[0]
+            x, _ = self.decoder(prev_output_tokens = masked_roberta_output, encoder_out = masked_w2v2_encoder_results, decoder_input_mask=target_padding_mask, features_only=True)
+
+
+            # 5. EMA teacher inference
+            with torch.no_grad():
+                # use EMA parameter as the teacher
+                self.ema.model.eval()
+
+                decoder_out = self.ema.model( # just decoder
+                    prev_output_tokens = masked_roberta_output,
+                    encoder_out = masked_w2v2_encoder_results,
+                    return_all_hiddens=True,
+                    features_only=True,
+                )
+
+                '''
+                (Pdb) self.decoder.project_out_dim
+                Linear(in_features=768, out_features=512, bias=False)
+                (Pdb) decoder_out[0].size()
+                torch.Size([1, 23, 512])
+                (Pdb) len(decoder_out[-1]['inner_states'])
+                7
+                (Pdb) decoder_out[-1]['inner_states'][-1].size()
+                torch.Size([23, 1, 768])
+                '''
+
+                import pdb; pdb.set_trace()
+
+                # y = decoder_out["fc_results"]
+                y = decoder_out[-1]['inner_states']
+
+                y = y[-self.average_top_k_layers :]
+
+                # target normalizer
+                # 1. instance norm -> self.cfg.instance_norm_target_layer
+                # 2. batch norm -> self.cfg.batch_norm_target_layer
+                # 3. layer norm -> self.cfg.layer_norm_target_layer
+
+                # self.cfg.layer_norm_targets
+                # self.cfg.instance_norm_targets
+
+                permuted = False
+                if self.cfg.instance_norm_target_layer or self.cfg.batch_norm_target_layer:
+                    y = [tl.permute(1, 2, 0) for tl in y]  # TBC -> BCT
+                    permuted = True
+
+                if self.cfg.batch_norm_target_layer:
+                    y = [
+                        F.batch_norm(
+                            tl.float(), running_mean=None, running_var=None, training=True
+                        )
+                        for tl in y
+                    ]
+
+                if self.cfg.instance_norm_target_layer:
+                    y = [F.instance_norm(tl.float()) for tl in y]
+
+                if permuted:
+                    y = [tl.transpose(1, 2) for tl in y]  # BCT -> BTC
+
+                if self.cfg.layer_norm_target_layer:
+                    y = [F.layer_norm(tl.float(), tl.shape[-1:]) for tl in y]
+
+                y = sum(y) / len(y)
+
+                if not permuted:
+                    y = y.transpose(0, 1)
+
+                if self.cfg.layer_norm_targets:
+                    y = F.layer_norm(y.float(), y.shape[-1:])
+
+                if self.cfg.instance_norm_targets:
+                    y = F.instance_norm(y.transpose(1, 2)).transpose(1, 2)
+
+            masked_indices = masked_roberta_input.eq(self.roberta_mask_idx)
+
+            # x is decoder representation outputs from masked inputs
+            # y is decoder representation outputs from non-masked inputs
+            x = x[masked_indices]
+            y = y[masked_indices]
+
+            x = self.regression_head(x)
+
+            sz = x.size(-1)
+            if self.cfg.loss_beta == 0:
+                loss = F.mse_loss(x.float(), y.float(), reduction="none").sum(dim=-1)
+            else:
+                loss = F.smooth_l1_loss(
+                    x.float(), y.float(), reduction="none", beta=self.cfg.loss_beta
+                ).sum(dim=-1)
+
+            result = {
+                "losses": {
+                    "main": loss.sum() / math.sqrt(sz)
+                    if self.loss_scale <= 0
+                    else loss.sum() * self.loss_scale,
+                },
+                "sample_size": loss.numel(),
+            }
+
+            # logging other values
+            other_logs = {
+                "ema_decay": self.ema.get_decay() * 1000
+            }
+            result["logs"] = other_logs
+            return result
+
+        return decoder_out, transcripts, target_padding_mask
+
+
+    @staticmethod
+    def compute_var(y):
+        y = y.view(-1, y.size(-1))
+        if dist.is_initialized():
+            zc = torch.tensor(y.size(0)).cuda()
+            zs = y.sum(dim=0)
+            zss = (y ** 2).sum(dim=0)
+
+            dist.all_reduce(zc)
+            dist.all_reduce(zs)
+            dist.all_reduce(zss)
+
+            var = zss / (zc - 1) - (zs ** 2) / (zc * (zc - 1))
+            return torch.sqrt(var + 1e-6).mean()
+        else:
+            return torch.sqrt(y.var(dim=0) + 1e-6).mean()
 
 
     def get_targets(self, sample, net_output):
@@ -659,6 +893,8 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         else:
             # hyp_words = post_process(hyp_pieces, self.cfg.common_eval.post_process)
             hyp_words = post_process(hyp_pieces, 'letter')
+        # import pdb; pdb.set_trace()
+        hyp_words = re.sub(" +", " ", hyp_words).strip()
         # output = hyp_words.lower()
         output = hyp_words
         return output
@@ -762,17 +998,6 @@ def module_name_fordropout(module_name: str) -> str:
 
 
 class TransformerDecoderBase(FairseqIncrementalDecoder):
-    """
-    Transformer decoder consisting of *cfg.decoder.layers* layers. Each layer
-    is a :class:`TransformerDecoderLayer`.
-    Args:
-        args (argparse.Namespace): parsed command-line arguments
-        dictionary (~fairseq.data.Dictionary): decoding dictionary
-        embed_tokens (torch.nn.Embedding): output embedding
-        no_encoder_attn (bool, optional): whether to attend to encoder outputs
-            (default: False).
-    """
-
     def __init__(
         self,
         cfg,
@@ -807,10 +1032,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             else None
         )            
 
-        # import pdb; pdb.set_trace()
-
         self.embed_tokens = embed_tokens
-
         self.embed_scale = 1.0 if self.cfg.no_scale_embedding else math.sqrt(embed_dim)
 
         if not self.cfg.adaptive_input and self.cfg.quant_noise.pq > 0:
@@ -849,6 +1071,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
 
         self.cross_self_attention = self.cfg.cross_self_attention
 
+        # import pdb; pdb.set_trace()
+
         if self.decoder_layerdrop > 0.0:
             self.layers = LayerDropModuleList(p=self.decoder_layerdrop)
         else:
@@ -872,13 +1096,12 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             else None
         )
 
+        # output projection layer
         self.adaptive_softmax = None
-
-        ## dont need embedding layer
-
         self.output_projection = output_projection
         if self.output_projection is None:
             self.build_output_projection(self.cfg, dictionary, embed_tokens)
+
 
     def build_output_projection(self, cfg, dictionary, embed_tokens):
         if cfg.adaptive_softmax_cutoff is not None:
@@ -929,9 +1152,10 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         prev_output_tokens,
         encoder_out,
         # encoder_out: Optional[Dict[str, List[Tensor]]] = None,
+        decoder_input_mask=None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         features_only: bool = False,
-        full_context_alignment: bool = False,
+        full_context_alignment: bool = True,
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
         src_lengths: Optional[Any] = None,
@@ -955,11 +1179,10 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
                 - a dictionary with any model-specific outputs
         """
 
-        # need only cross attention
-        # not PE, embedding, output projection
         x, extra = self.extract_features(
             prev_output_tokens,
             encoder_out=encoder_out,
+            decoder_input_mask=decoder_input_mask,
             incremental_state=incremental_state,
             full_context_alignment=full_context_alignment,
             alignment_layer=alignment_layer,
@@ -975,34 +1198,31 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         self,
         prev_output_tokens,
         encoder_out,
+        decoder_input_mask,
         # encoder_out: Optional[Dict[str, List[Tensor]]],
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
-        full_context_alignment: bool = False,
+        full_context_alignment: bool = True,
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
     ):
         return self.extract_features_scriptable(
             prev_output_tokens,
             encoder_out,
-            incremental_state,
-            full_context_alignment,
+            decoder_input_mask,
+            incremental_state, # should None
+            full_context_alignment, # should True
             alignment_layer,
             alignment_heads,
         )
-
-    """
-    A scriptable subclass of this class has an extract_features method and calls
-    super().extract_features, but super() is not supported in torchscript. A copy of
-    this function is made to be used in the subclass instead.
-    """
 
     def extract_features_scriptable(
         self,
         prev_output_tokens,
         encoder_out,
+        decoder_input_mask,
         # encoder_out: Optional[Dict[str, List[Tensor]]],
-        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
-        full_context_alignment: bool = False,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None, # should None
+        full_context_alignment: bool = True, # should True
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
     ):
@@ -1025,8 +1245,12 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
 
         # bs, slen = prev_output_tokens.size()
 
+        # import pdb; pdb.set_trace()
+
         if alignment_layer is None:
             alignment_layer = self.num_layers - 1
+
+        # import pdb; pdb.set_trace()
 
         enc: Optional[Tensor] = None
         padding_mask: Optional[Tensor] = None
@@ -1039,16 +1263,13 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         # if encoder_out is not None and len(encoder_out["encoder_padding_mask"]) > 0:
         #     padding_mask = encoder_out["encoder_padding_mask"][0]
 
+        # import pdb; pdb.set_trace()
 
         if self.encoder_output_proj:
-            enc = self.encoder_output_proj(encoder_out)
+            enc = self.encoder_output_proj(encoder_out['encoder_out'])
         else:
-            enc = encoder_out
-
-
-        ##################################################
-        ######## PE + embedding 부분 노필요 ################
-        ##################################################
+            enc = encoder_out['encoder_out']
+        padding_mask = encoder_out["padding_mask"]
 
         # # embed positions
         # positions = None
@@ -1079,8 +1300,8 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
 
         # x = self.dropout_module(x)
 
-        x = prev_output_tokens
 
+        x = prev_output_tokens
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
@@ -1089,34 +1310,108 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         #     self_attn_padding_mask = prev_output_tokens.eq(self.padding_idx)
 
         # import pdb; pdb.set_trace()
+        self_attn_padding_mask = decoder_input_mask
+
+        # import pdb; pdb.set_trace()
+
 
         # decoder layers
         attn: Optional[Tensor] = None
         inner_states: List[Optional[Tensor]] = [x]
+
+        # s1 = time.time()
+
         for idx, layer in enumerate(self.layers):
+
+            # This should be None if you want to use NAR Decoding
             if incremental_state is None and not full_context_alignment:
                 self_attn_mask = self.buffered_future_mask(x)
             else:
                 self_attn_mask = None
-
+            
             # import pdb; pdb.set_trace()
 
             x, layer_attn, _ = layer(
-                x,
-                enc,
-                padding_mask,
-                incremental_state,
-                self_attn_mask=self_attn_mask,
-                self_attn_padding_mask=self_attn_padding_mask,
+                x, # roberta hidden # torch.Size([51, 8, 768])
+                enc, # w2v2 hidden # torch.Size([634, 8, 768])
+                padding_mask, # None
+                incremental_state, # None
+                self_attn_mask=self_attn_mask, # None
+                self_attn_padding_mask=self_attn_padding_mask, # torch.Size([8, 51])
                 need_attn=bool((idx == alignment_layer)),
                 need_head_weights=bool((idx == alignment_layer)),
             )
 
-            # import pdb; pdb.set_trace()
-
             inner_states.append(x)
+
             if layer_attn is not None and idx == alignment_layer:
                 attn = layer_attn.float().to(x)
+
+        # s2 = time.time()
+        # print('full_context_alignment : {}, time : {}'.format(full_context_alignment,s2-s1))
+
+        # AR vs NAR
+        '''
+        [2022-02-26 20:39:15,262][fairseq_cli.train][INFO] - Start iterating over samples
+        full_context_alignment : True, time : 0.03482556343078613
+        full_context_alignment : True, time : 0.016609668731689453
+        full_context_alignment : True, time : 0.007838964462280273
+        full_context_alignment : True, time : 0.007956743240356445
+        full_context_alignment : True, time : 0.008926153182983398
+        full_context_alignment : True, time : 0.006220340728759766
+        full_context_alignment : True, time : 0.006015777587890625
+        full_context_alignment : True, time : 0.005965232849121094
+        full_context_alignment : True, time : 0.0075855255126953125
+        full_context_alignment : True, time : 0.00720524787902832
+        full_context_alignment : True, time : 0.005980491638183594
+        full_context_alignment : True, time : 0.00596308708190918
+        full_context_alignment : True, time : 0.007592916488647461
+        full_context_alignment : True, time : 0.00717926025390625
+        full_context_alignment : True, time : 0.007151603698730469
+        full_context_alignment : True, time : 0.007178544998168945
+        full_context_alignment : True, time : 0.007654428482055664
+        full_context_alignment : True, time : 0.0061762332916259766
+        full_context_alignment : True, time : 0.006176948547363281
+        full_context_alignment : True, time : 0.0074460506439208984
+        full_context_alignment : True, time : 0.006490230560302734
+        full_context_alignment : True, time : 0.008759737014770508
+        full_context_alignment : True, time : 0.006211042404174805
+        full_context_alignment : True, time : 0.007407188415527344
+        full_context_alignment : True, time : 0.007780551910400391
+        full_context_alignment : True, time : 0.007874727249145508
+        full_context_alignment : True, time : 0.005155801773071289
+
+        [2022-02-26 20:42:57,648][fairseq_cli.train][INFO] - Start iterating over samples
+        full_context_alignment : False, time : 0.04191136360168457
+        full_context_alignment : False, time : 0.010588645935058594
+        full_context_alignment : False, time : 0.008368730545043945
+        full_context_alignment : False, time : 0.008075475692749023
+        full_context_alignment : False, time : 0.009489297866821289
+        full_context_alignment : False, time : 0.00696873664855957
+        full_context_alignment : False, time : 0.007178783416748047
+        full_context_alignment : False, time : 0.00745844841003418
+        full_context_alignment : False, time : 0.008281469345092773
+        full_context_alignment : False, time : 0.010922670364379883
+        full_context_alignment : False, time : 0.006968975067138672
+        full_context_alignment : False, time : 0.006543636322021484
+        full_context_alignment : False, time : 0.008106231689453125
+        full_context_alignment : False, time : 0.0077364444732666016
+        full_context_alignment : False, time : 0.007710695266723633
+        full_context_alignment : False, time : 0.007706403732299805
+        full_context_alignment : False, time : 0.008033990859985352
+        full_context_alignment : False, time : 0.006588459014892578
+        full_context_alignment : False, time : 0.0076906681060791016
+        full_context_alignment : False, time : 0.007881641387939453
+        full_context_alignment : False, time : 0.0068128108978271484
+        full_context_alignment : False, time : 0.008458614349365234
+        full_context_alignment : False, time : 0.0065059661865234375
+        full_context_alignment : False, time : 0.007749795913696289
+        full_context_alignment : False, time : 0.008281946182250977
+        full_context_alignment : False, time : 0.007920503616333008
+        '''
+        
+
+        # import pdb; pdb.set_trace()
 
         if attn is not None:
             if alignment_heads is not None:
@@ -1131,7 +1426,6 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
 
-        ##
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
 
@@ -1238,15 +1532,11 @@ def Embedding(num_embeddings, embedding_dim, padding_idx):
 
 def align_bpe_to_words(roberta_dict, bpe, bpe_tokens: torch.LongTensor, other_tokens: List[str]):
 
-    # import pdb; pdb.set_trace()
-
     assert bpe_tokens.dim() == 1
     assert bpe_tokens[0] == 0
 
     def clean(text):
         return text.strip()
-
-    # import pdb; pdb.set_trace()
 
     # remove whitespaces to simplify alignment
     bpe_tokens = [roberta_dict.string([x]) for x in bpe_tokens]
@@ -1254,8 +1544,6 @@ def align_bpe_to_words(roberta_dict, bpe, bpe_tokens: torch.LongTensor, other_to
         clean(bpe.decode(x) if x not in {"<s>", ""} else x) for x in bpe_tokens
     ]
     other_tokens = [clean(str(o)) for o in other_tokens]
-
-    # import pdb; pdb.set_trace()
 
     # strip leading <s>
     bpe_tokens = bpe_tokens[1:]
@@ -1286,13 +1574,11 @@ def align_bpe_to_words(roberta_dict, bpe, bpe_tokens: torch.LongTensor, other_to
                 break
         assert len(bpe_indices) > 0
 
-        # import pdb; pdb.set_trace()
-
-        # alignment.append(bpe_indices)
         alignment.append(bpe_indices[0])
     assert len(alignment) == len(other_tokens)
 
     return alignment
+
 
 
 
@@ -1329,29 +1615,17 @@ class Point:
 
 
 def backtrack(trellis, emission, tokens, blank_id=0):
-    # Note:
-    # j and t are indices for trellis, which has extra dimensions
-    # for time and tokens at the beginning.
-    # When refering to time frame index `T` in trellis,
-    # the corresponding index in emission is `T-1`.
-    # Similarly, when refering to token index `J` in trellis,
-    # the corresponding index in transcript is `J-1`.
     j = trellis.size(1) - 1
     t_start = torch.argmax(trellis[:, j]).item()
 
     path = []
     for t in range(t_start, 0, -1):
         # 1. Figure out if the current position was stay or change
-        # Note (again):
-        # `emission[J-1]` is the emission at time frame `J` of trellis dimension.
-        # Score for token staying the same from time frame J-1 to T.
         stayed = trellis[t-1, j] + emission[t-1, blank_id]
-        # Score for token changing from C-1 at T-1 to J at T.
         changed = trellis[t-1, j-1] + emission[t-1, tokens[j-1]]
 
         # 2. Store the path with frame-wise probability.
         prob = emission[t-1, tokens[j-1] if changed > stayed else 0].exp().item()
-        # Return token index and time index in non-trellis coordinate.
         path.append(Point(j-1, t-1, prob))
 
         # 3. Update the token
@@ -1364,7 +1638,6 @@ def backtrack(trellis, emission, tokens, blank_id=0):
     return path[::-1]
 
 
-# Merge the labels
 @dataclass
 class Segment:
     label: str
@@ -1379,8 +1652,8 @@ class Segment:
     def length(self):
         return self.end - self.start
 
+
 def merge_repeats(path, transcript):
-    # import pdb; pdb.set_trace()
     i1, i2 = 0, 0
     segments = []
     while i1 < len(path):
@@ -1389,11 +1662,9 @@ def merge_repeats(path, transcript):
         score = sum(path[k].score for k in range(i1, i2)) / (i2 - i1)
         segments.append(Segment(transcript[path[i1].token_index], path[i1].time_index, path[i2-1].time_index + 1, score))
         i1 = i2
-        # import pdb; pdb.set_trace()
     return segments
 
 
-# Merge words
 def merge_words(segments, separator='|'):
     words = []
     i1, i2 = 0, 0

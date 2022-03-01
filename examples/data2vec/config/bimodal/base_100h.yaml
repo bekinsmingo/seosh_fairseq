@@ -1,7 +1,7 @@
 # @package _group_
 
 common:
-  fp16: true
+  fp16: false
   log_format: json
   log_interval: 200
 
@@ -10,7 +10,7 @@ checkpoint:
   best_checkpoint_metric: wer
 
 task:
-  _name: data2vec_audio_finetuning
+  _name: data2vec_audio_text_finetuning
   data: ???
   normalize: false
   labels: bpe
@@ -19,11 +19,12 @@ dataset:
   num_workers: 6
   max_tokens: 3200000
   skip_invalid_size_inputs_valid_test: true
+  train_subset: train_clean_100
   valid_subset: dev_other
 
 distributed_training:
   ddp_backend: legacy_ddp
-  distributed_world_size: 2
+  distributed_world_size: 8
 
 criterion:
   _name: cross_entropy_for_data2vec
@@ -32,17 +33,25 @@ optimization:
   max_update: 80000
   lr: [0.00003]
   sentence_avg: true
-  update_freq: [4]
+
+# optimization:
+#   max_update: 80000
+#   lr: [0.00003]
+#   sentence_avg: true
+#   update_freq: [4]
 
 optimizer:
   _name: adam
   adam_betas: (0.9,0.98)
   adam_eps: 1e-08
 
+# lr_scheduler:
+#   _name: tri_stage
+#   phase_ratio: [0.1, 0.4, 0.5]
+#   final_lr_scale: 0.05
+
 lr_scheduler:
-  _name: tri_stage
-  phase_ratio: [0.1, 0.4, 0.5]
-  final_lr_scale: 0.05
+  _name: cosine
 
 model:
   _name: data2vec_bimodal

@@ -60,6 +60,35 @@ class MaskedLmLoss(FairseqCriterion):
         if masked_tokens is not None:
             targets = targets[masked_tokens]
 
+        import pdb; pdb.set_trace()
+        '''
+        (Pdb) sample['target'][-1][-20:]
+        tensor([ 1,  1,  1,  1,  1, 10,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
+                1,  1], device='cuda:0')
+        (Pdb) masked_tokens[-1][-20:]
+        tensor([False, False, False, False, False,  True, False, False, False, False,
+                False, False, False, False, False, False, False, False, False, False],
+            device='cuda:0')
+        (Pdb) sample["net_input"]['src_tokens'][-1][-20:]
+        tensor([  114,    89,    16,    45,  7308, 50264,  9506,    10,  9506,  2649,
+                22682,  4321, 31417, 19508, 22465,     8, 30748,  2829,     4,     2],
+            device='cuda:0')
+        (Pdb) model.get_targets(sample, [logits])[-1][-20:]
+        tensor([ 1,  1,  1,  1,  1, 10,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
+                1,  1], device='cuda:0')
+        (Pdb) model.get_targets(sample, [logits]).size()
+        torch.Size([16, 499])
+        (Pdb) masked_tokens.size()
+        torch.Size([16, 499])
+        (Pdb) targets.size()
+        torch.Size([1198])
+        (Pdb) targets.ne(self.padding_idx)
+        tensor([True, True, True,  ..., True, True, True], device='cuda:0')
+        (Pdb) torch.sum(targets.ne(self.padding_idx))
+        tensor(1198, device='cuda:0')
+        '''
+
+
         loss = modules.cross_entropy(
             logits.view(-1, logits.size(-1)),
             targets.view(-1),
