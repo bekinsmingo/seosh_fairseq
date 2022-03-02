@@ -11,7 +11,7 @@
 ## 2. Fairseq (To install fairseq and develop locally)
 
 ``` bash
-git clone https://github.com/pytorch/seosh_fairseq
+git clone https://github.com/SeunghyunSEO/seosh_fairseq
 cd seosh_fairseq
 pip install --editable ./
 ```
