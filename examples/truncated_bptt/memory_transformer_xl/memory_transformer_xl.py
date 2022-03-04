@@ -454,7 +454,7 @@ class MemoryTransformerXL(nn.Module):
 
         self.adaptive_softmax = None
         if adaptive_softmax:
-            self.adaptive_softmax = AdaptiveSoftmax(
+            self.adaptive_softmax = AdaptiveSoftmax( # forward -> 
                 vocab_size = len(target_dictionary),
                 input_dim = emb_dim,
                 cutoff = utils.eval_str_list(adaptive_softmax_cutoff, type=int), # e.g. [20000,20000,160000]

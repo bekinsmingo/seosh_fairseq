@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn.functional as F
@@ -17,17 +17,58 @@ from fairseq.dataclass.constants import DDP_BACKEND_CHOICES
 import logging
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class CrossEntropyforData2vecCriterionConfig(FairseqDataclass):
     sentence_avg: bool = II("optimization.sentence_avg")
     ddp_backend: DDP_BACKEND_CHOICES = II("distributed_training.ddp_backend")
+    label_smoothing: float = field(
+        default=0.0,
+        metadata={"help": "epsilon for label smoothing, 0 means no label smoothing"},
+    )
+    report_accuracy: bool = field(
+        default=False,
+        metadata={"help": "report accuracy metric"},
+    )
+    ignore_prefix_size: int = field(
+        default=0,
+        metadata={"help": "Ignore first N tokens"},
+    )
+    mwer: bool = field(
+        default=False,
+        metadata={"help": "report accuracy metric"},
+    )
+
+
+def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True):
+    if target.dim() == lprobs.dim() - 1:
+        target = target.unsqueeze(-1)
+    nll_loss = -lprobs.gather(dim=-1, index=target)
+    smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
+    if ignore_index is not None:
+        pad_mask = target.eq(ignore_index)
+        nll_loss.masked_fill_(pad_mask, 0.0)
+        smooth_loss.masked_fill_(pad_mask, 0.0)
+    else:
+        nll_loss = nll_loss.squeeze(-1)
+        smooth_loss = smooth_loss.squeeze(-1)
+    if reduce:
+        nll_loss = nll_loss.sum()
+        smooth_loss = smooth_loss.sum()
+    eps_i = epsilon / (lprobs.size(-1) - 1)
+    loss = (1.0 - epsilon - eps_i) * nll_loss + eps_i * smooth_loss
+    return loss, nll_loss
 
 
 @register_criterion("cross_entropy_for_data2vec", dataclass=CrossEntropyforData2vecCriterionConfig)
 class CrossEntropyCriterionforData2Vec(FairseqCriterion):
-    def __init__(self, task, sentence_avg):
+    def __init__(self, task, sentence_avg, label_smoothing, ignore_prefix_size=0, report_accuracy=False, mwer=False,):
         super().__init__(task)
         self.sentence_avg = sentence_avg
+        self.eps = label_smoothing
+        self.ignore_prefix_size = ignore_prefix_size
+        self.report_accuracy = report_accuracy
+        self.mwer = mwer
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -38,37 +79,19 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
         3) logging outputs to display while training
         """
 
-
         # net_output = model(**sample["net_input"])
         net_output, ctc_transcripts, target_padding_mask = model(sample)
         
         if model.decoder.adaptive_softmax is not None:
             loss, lprobs = self.compute_adaptive_loss(model, net_output, sample, reduce=reduce)
-            '''
-            (Pdb) loss
-            tensor([3434.5464], device='cuda:0', grad_fn=<AddBackward0>)
-            (Pdb) sample['target'][-1]
-            tensor([ 4148,    61,  4477,    10,  1763,     9,     5,   793,  4388,  9571,
-                    373, 33799,  1536,    80,   739, 23416,  1672,  6410,    19,  2289,
-                    11720, 14216,  5730,   293,   278,    11,   483,   225,  9074, 11217,
-                    2641,     5,  9030,     8, 43648,  1109,     4,     1,     1,     1,
-                        1,     1,     1,     1,     1,     1,     1,     1,     1],
-                device='cuda:0', dtype=torch.int32)
-            '''
+            # TODO: adaptive softmax for evaluation mode
+        elif self.eps > 0.0:
+            loss, lprobs = self.compute_label_smoothed_loss(model, net_output, sample, reduce=reduce)
+            # import pdb; pdb.set_trace()
         else:
             loss, lprobs = self.compute_loss(model, net_output, sample, reduce=reduce)
-            '''
-            (Pdb) loss
-            tensor(3490.4690, device='cuda:0', grad_fn=<NllLossBackward>)
-            (Pdb) sample['target'][-1]
-            tensor([ 4148,    61,  4477,    10,  1763,     9,     5,   793,  4388,  9571,
-                    373, 33799,  1536,    80,   739, 23416,  1672,  6410,    19,  2289,
-                    11720, 14216,  5730,   293,   278,    11,   483,   225,  9074, 11217,
-                    2641,     5,  9030,     8, 43648,  1109,     4,     1,     1,     1,
-                        1,     1,     1,     1,     1,     1,     1,     1,     1],
-                device='cuda:0', dtype=torch.int32)
-            '''
 
+        # for calculate WER (MWER loss)
         # import pdb; pdb.set_trace()
 
         sample_size = (sample["target"].size(0) if self.sentence_avg else sample["ntokens"])
@@ -94,6 +117,9 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
                 ctc_w_len = 0
 
                 # import pdb; pdb.set_trace()
+
+                rp_ctc_wer = []
+                rp_wer = []
 
                 lprobs = lprobs.argmax(dim=-1)
                 lprobs = lprobs.masked_fill(target_padding_mask,self.padding_idx)
@@ -136,6 +162,11 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
                     ctc_w_errs += editdistance.eval(ctc_pred_words, ctc_targ_words)
                     ctc_w_len += len(targ_words)
 
+                    # for report
+
+                    rp_ctc_wer.append(safe_round(editdistance.eval(ctc_pred_words, ctc_targ_words)*100/len(targ_words),3))
+                    rp_wer.append(safe_round(editdistance.eval(pred_words, targ_words)*100/len(targ_words),3))
+
                     # import pdb; pdb.set_trace()
 
                 logging_output["w_errors"] = w_errs
@@ -151,9 +182,13 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
                 logger.info("--------------------- ctc ---------------------")
                 logger.info("TARG : " + ctc_targ_units_arr)
                 logger.info("HYPO : " + ctc_pred_units_arr)
+                logger.info("BATCH WER : {}".format(rp_ctc_wer))
+                logger.info("BATCH WER : {}".format(safe_round(ctc_w_errs*100/ctc_w_len,3)))
                 logger.info("-------------------- Roberta ------------------")
                 logger.info("TARG : " + targ_units_arr)
                 logger.info("HYPO : " + pred_units_arr)
+                logger.info("BATCH WER : {}".format(rp_wer))
+                logger.info("BATCH WER : {}".format(safe_round(w_errs*100/w_len,3)))
                 logger.info("-----------------------------------------------")
 
 
@@ -204,6 +239,31 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
         else:
             loss = torch.tensor(0)
         return loss, lprobs
+
+    def compute_label_smoothed_loss(self, model, net_output, sample, reduce=True):
+        lprobs = model.get_normalized_probs(net_output, log_probs=True) # torch.Size([8, 48, 50264])
+        # import pdb; pdb.set_trace()
+        if model.training:
+            target = model.get_targets(sample, net_output)
+            lprobs = lprobs.view(-1, lprobs.size(-1)) # torch.Size([384, 50264])
+            target = target.view(-1)
+            if self.ignore_prefix_size > 0:
+                # lprobs: B x T x C
+                lprobs = lprobs[:, self.ignore_prefix_size :, :].contiguous()
+                target = target[:, self.ignore_prefix_size :].contiguous()
+            loss, nll_loss = label_smoothed_nll_loss(
+                lprobs,
+                target,
+                self.eps,
+                ignore_index=self.padding_idx,
+                reduce=reduce,
+            )
+            # return loss, nll_loss
+        else:
+            loss = torch.tensor(0)
+        # import pdb; pdb.set_trace()
+        return loss, lprobs
+
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:

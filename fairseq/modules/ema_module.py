@@ -97,6 +97,8 @@ class EMAModule:
         decay = self.decay
 
         ema_state_dict = {}
+
+        # EMA model's params
         ema_params = (
             self.fp32_params if self.config.ema_fp32 else self.model.state_dict()
         )
@@ -120,13 +122,20 @@ class EMAModule:
                 # Do not decay a model.version pytorch param
                 continue
 
+            # decay or not
             if key in self.skip_keys:
+                # import pdb; pdb.set_trace()
                 ema_param = param.to(dtype=ema_param.dtype).clone()
                 ema_params[key].copy_(ema_param)
             else:
+                # multiply and add 
+                # \delta <- \tau * \delta + ( 1 - \tau ) * \theta 
                 ema_param.mul_(decay)
                 ema_param.add_(param.to(dtype=ema_param.dtype), alpha=1 - decay)
+
             ema_state_dict[key] = ema_param
+
+        # ema_state_dict -> EMA teacher model params
         self.restore(ema_state_dict, build_fp32_params=False)
 
     def step(self, new_model):

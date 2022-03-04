@@ -45,7 +45,7 @@ optimizer:
 #   final_lr_scale: 0.05
 
 lr_scheduler:
-  _name: tri_stage
+  _name: cosine
 
 model:
   _name: data2vec_bimodal

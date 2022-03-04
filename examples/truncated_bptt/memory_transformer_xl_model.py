@@ -202,7 +202,7 @@ class MemoryTransformerXLDecoder(FairseqIncrementalDecoder):
                 self._mems = output[1]
 
         if self.cfg.adaptive_softmax is None:
-            final_output = self.output_proj_layer(output[0])
+            final_output = self.output_proj_layer(output[0]) # vocab 사이즈로 -> projection
         else:
             final_output = output[0]
 

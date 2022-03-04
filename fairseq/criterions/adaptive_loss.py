@@ -53,9 +53,10 @@ class AdaptiveLoss(FairseqCriterion):
             hasattr(model.decoder, "adaptive_softmax")
             and model.decoder.adaptive_softmax is not None
         )
+
         adaptive_softmax = model.decoder.adaptive_softmax
 
-        net_output = model(**sample["net_input"])
+        net_output = model(**sample["net_input"]) # B, T, vocab 이 아님 -> 
         orig_target = model.get_targets(sample, net_output)
 
         nsentences = orig_target.size(0)
@@ -63,7 +64,7 @@ class AdaptiveLoss(FairseqCriterion):
 
         bsz = orig_target.size(0)
 
-        logits, target = adaptive_softmax(net_output[0], orig_target)
+        logits, target = adaptive_softmax(net_output[0], orig_target) # target 이 없으면? 
         assert len(target) == len(logits)
 
         loss = net_output[0].new(1 if reduce else bsz).zero_()

@@ -144,16 +144,16 @@ class Data2VecAudioTextFinetuningTask(AudioPretrainingTask):
         model.train()
         model.set_num_updates(update_num)
         # print('update_num',update_num)
-        if self.cfg.pretraining:
-            # model.set_num_updates(update_num)
-            freeze_module_params(model.audio_encoder_ctc)
-            freeze_module_params(model.text_encoder)
-            # pass
-        else:
-            freeze_module_params(model.audio_encoder_ctc)
-            # model.audio_encoder_ctc.eval()
-            freeze_module_params(model.text_encoder)
-            # model.text_encoder.eval()
+        # if self.cfg.pretraining:
+        #     # model.set_num_updates(update_num)
+        #     freeze_module_params(model.audio_encoder_ctc)
+        #     freeze_module_params(model.text_encoder)
+        #     # pass
+        # else:
+        #     freeze_module_params(model.audio_encoder_ctc)
+        #     # model.audio_encoder_ctc.eval()
+        #     freeze_module_params(model.text_encoder)
+        #     # model.text_encoder.eval()
 
         with torch.autograd.profiler.record_function("forward"):
             with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):

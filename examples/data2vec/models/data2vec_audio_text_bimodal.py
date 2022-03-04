@@ -96,14 +96,22 @@ import time
 # from fairseq.models.roberta.alignment_utils import align_bpe_to_words
 
 
-############################################
-############ bimodal data2vec model #############
-############ cross attention of audio and text #############
-############################################
+#########################################################
+############ bimodal data2vec model #####################
+############ cross attention of audio and text ##########
+#########################################################
 
 @dataclass
 # class Data2VecAudioTextConfig(Wav2Vec2Config):
 class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
+
+    max_update: bool = II("optimization.max_update")
+    target_mask_prob: float = field(
+        default=0.2, metadata={"help": "decoder layerdrop chance"}
+    )
+    inference_ctc_mask_prob: float = field(
+        default=0.9, metadata={"help": "decoder layerdrop chance"}
+    )
 
     ## 1. -> Wav2Vec2AsrConfig for Wav2Vec-CTC Encdoer
 
@@ -166,6 +174,18 @@ class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
     roberta_path: str = field(
         default=MISSING, metadata={"help": "path to roberta model"}
     )
+
+    w2v_ctc_freeze: bool = field(
+        default=True,
+        metadata={"help": ""},
+    )
+
+    roberta_freeze: bool = field(
+        default=True,
+        metadata={"help": ""},
+    )
+
+    
 
     adaptive_softmax_cutoff: Optional[str] = field(
         default=None,
@@ -294,7 +314,7 @@ def check_model_freezed(m):
 
 @register_model("data2vec_bimodal", dataclass=Data2VecAudioTextConfig)
 class Data2VecAudioTextModel(BaseFairseqModel):
-    def __init__(self, cfg: Data2VecAudioTextConfig, audio_encoder_ctc, asr_eval_decoder, asr_embedding_layer, asr_tgt_dict, text_encoder, roberta_src_dict, decoder):
+    def __init__(self, cfg: Data2VecAudioTextConfig, audio_encoder_ctc, asr_eval_decoder, asr_eval_decoder_with_ngram, asr_embedding_layer, asr_tgt_dict, text_encoder, roberta_src_dict, decoder):
         super().__init__()
 
         self.cfg = cfg
@@ -305,12 +325,14 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         # self.audio_encoder = self.audio_encoder_ctc.w2v_encoder.w2v_model.to(self.device)
         # self.device = next(self.audio_encoder.parameters()).device
         self.asr_eval_decoder = asr_eval_decoder
+        # self.asr_eval_decoder_with_ngram = asr_eval_decoder_with_ngram
         self.asr_embedding_layer = asr_embedding_layer
         self.asr_tgt_dict = asr_tgt_dict
         self.mask_token = self.asr_tgt_dict.bos_index
 
         ## RoBERTa Encoder
         self.text_encoder = text_encoder.to(self.device)
+        self.text_encoder.encoder.lm_head = None
         self.roberta_src_dict = roberta_src_dict
         self.roberta_mask_idx = self.roberta_src_dict.index("<mask>")
         assert self.roberta_mask_idx != self.roberta_src_dict.unk(), self.roberta_src_dict.symbols
@@ -322,6 +344,8 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         ## ema training
         self.ema = None
+        self.ema_decoder = None
+        self.ema_text_encoder = None
 
         self.average_top_k_layers = cfg.average_top_k_layers # 8
 
@@ -345,8 +369,6 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         self.num_updates = 0
 
-        # self.final_proj = nn.Linear(self.cfg.decoder_embed_dim, self.cfg.decoder_embed_dim) 
-
         self.ema_pretraining = cfg.ema_pretraining
 
         embed_dim = self.cfg.decoder_embed_dim
@@ -359,18 +381,37 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             curr_dim = next_dim
 
         projs.append(nn.Linear(curr_dim, embed_dim))
+        # self.regression_head = None
         self.regression_head = nn.Sequential(*projs)
+        # self.final_proj = nn.Linear(self.cfg.decoder_embed_dim, self.cfg.decoder_embed_dim) 
+
+        logger.info("===============================================================")
+        logger.info("| EMA Pretraining mode? {}".format(self.ema_pretraining))
 
         if self.ema_pretraining:
-            pass
-        else:
-            logger.info("===============================================================")
-            logger.info("| EMA Pretraining mode? {}".format(self.ema_pretraining))
-            logger.info("| freezing audio encoder and text encoder...")
+            logger.info("| freezing audio encoder...")
             freeze_module_params(self.audio_encoder_ctc)
-            freeze_module_params(self.text_encoder)
+            # self.audio_encoder_ctc.eval()
             logger.info("| Done !")
-            logger.info("===============================================================")
+        else:
+            if self.cfg.w2v_ctc_freeze:
+                logger.info("| freezing audio encoder...")
+                freeze_module_params(self.audio_encoder_ctc)
+                self.audio_encoder_ctc.eval()
+                logger.info("| Done !")
+            if self.cfg.roberta_freeze:
+                logger.info("| freezing text encoder...")
+                freeze_module_params(self.text_encoder)
+                self.text_encoder.eval()
+                logger.info("| Done !")
+        logger.info("===============================================================")
+
+
+        self.target_mask_prob = self.cfg.target_mask_prob
+        self.inference_ctc_mask_prob = self.cfg.inference_ctc_mask_prob
+        self.max_update = self.cfg.max_update
+
+        # import pdb; pdb.set_trace()
         
 
     def make_ema_teacher(self):
@@ -379,22 +420,46 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             ema_fp32=True,
         )
 
-        skip_keys = set()
+        decoder_skip_keys = set()
 
         for k, v in self.decoder.named_parameters():
             # print('name:',k)
             if 'layers' not in k :
                 # skip_keys.add(k.split('.weight')[0])
-                skip_keys.add(k)
-            else:
-                if 'norm' in k:
-                    skip_keys.add(k)
+                decoder_skip_keys.add(k)
+            # else:
+            #     if 'norm' in k:
+            #         skip_keys.add(k)
 
-        self.ema = EMAModule(
+        self.ema_decoder = EMAModule(
             self.decoder,
             ema_config,
-            skip_keys=skip_keys
+            skip_keys=decoder_skip_keys
         )
+
+        text_encoder_skip_keys = set()
+
+        for k, v in self.text_encoder.named_parameters():
+            if 'layers' not in k :
+                text_encoder_skip_keys.add(k)
+            # else:
+            #     if 'norm' in k:
+            #         skip_keys.add(k)
+
+
+        self.ema_text_encoder = EMAModule(
+            self.text_encoder,
+            ema_config,
+            skip_keys=text_encoder_skip_keys
+        )
+
+        # import pdb; pdb.set_trace()
+
+        # self.ema = EMAModule(
+        #     self.decoder,
+        #     ema_config,
+        #     skip_keys=skip_keys
+        # )
 
         # self.ema = EMAModule(
         #     self,
@@ -407,14 +472,12 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         # import pdb; pdb.set_trace()
 
+        if self.ema_decoder is None and self.regression_head is not None:
+            logger.info(f"making ema teacher")
+            self.make_ema_teacher()
+
         if self.ema_pretraining:
-            # if self.ema is None and self.final_proj is not None:
-            #     logger.info(f"making ema teacher")
-            #     self.make_ema_teacher()
-            if self.ema is None and self.regression_head is not None:
-                logger.info(f"making ema teacher")
-                self.make_ema_teacher()
-            elif self.training and self.ema is not None:
+            if self.training and self.ema_decoder is not None:
                 if self.cfg.ema_decay != self.cfg.ema_end_decay:
                     if num_updates >= self.cfg.ema_anneal_end_step:
                         decay = self.cfg.ema_end_decay
@@ -425,19 +488,44 @@ class Data2VecAudioTextModel(BaseFairseqModel):
                             num_updates,
                             self.cfg.ema_anneal_end_step,
                         )
-                    self.ema.set_decay(decay)
-                if self.ema.get_decay() < 1:
+                    self.ema_decoder.set_decay(decay)
+                    self.ema_text_encoder.set_decay(decay)
+                if self.ema_decoder.get_decay() < 1:
                     # self.ema.step(self.encoder if self.cfg.ema_transformer_only else self)
-                    self.ema.step(self.decoder)
+                    self.ema_decoder.step(self.decoder)
+                    self.ema_text_encoder.set_decay(decay)
         else:
             pass
 
         self.num_updates = num_updates
 
+
+    def state_dict(self, destination=None, prefix="", keep_vars=False):
+        state = super().state_dict(destination, prefix, keep_vars)
+        # if self.ema is not None:
+        #     state[prefix + "_ema"] = self.ema.fp32_params
+        return state
+
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # if self.ema is not None:
+        #     k = prefix + "_ema"
+        #     assert k in state_dict
+        #     self.ema.restore(state_dict[k], True)
+        #     del state_dict[k]
+        return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+
+    def upgrade_state_dict_named(self, state_dict, name):
+        super().upgrade_state_dict_named(state_dict, name)
+        return state_dict
+
+
     def remove_pretraining_modules(self, last_layer=None):
         self.regression_head = None
         self.ema = None
-
+        self.ema_decoder = None
+        self.ema_text_encoder = None
 
         # if last_layer is not None:
         #     self.encoder.sentence_encoder.layers = nn.ModuleList(
@@ -464,6 +552,8 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         ## 1. Wav2Vec2 Encoder
         audio_encoder_ctc, w2v_encoder_embed_dim, asr_tgt_dict = cls.build_audio_encoder(cfg)
         asr_eval_decoder = cls.build_asr_eval_decoder(asr_tgt_dict)
+        # asr_eval_decoder_with_ngram = cls.build_asr_eval_decoder_with_ngram(asr_tgt_dict)
+        asr_eval_decoder_with_ngram = None
         asr_embedding_layer = build_embedding(asr_tgt_dict, cfg.decoder_embed_dim)
 
         ## 2. RoBERTa Encoder
@@ -475,7 +565,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         decoder = cls.build_decoder(cfg, w2v_encoder_embed_dim, tgt_dict, text_encoder.encoder.sentence_encoder.embed_tokens)
         # decoder = cls.build_decoder(cfg, len(asr_tgt_dict), tgt_dict, text_encoder.encoder.sentence_encoder.embed_tokens)
 
-        return Data2VecAudioTextModel(cfg, audio_encoder_ctc, asr_eval_decoder, asr_embedding_layer, asr_tgt_dict, text_encoder, roberta_src_dict, decoder)
+        return Data2VecAudioTextModel(cfg, audio_encoder_ctc, asr_eval_decoder, asr_eval_decoder_with_ngram, asr_embedding_layer, asr_tgt_dict, text_encoder, roberta_src_dict, decoder)
 
 
     @classmethod
@@ -499,7 +589,24 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
     @classmethod
     def build_asr_eval_decoder(cls, tgt_dict):
+        logger.info("| building ASR viterbi decoder for greedy decoding...")
         decoding = DecodingConfig()
+        return Decoder(decoding, tgt_dict)
+
+    @classmethod
+    def build_asr_eval_decoder_with_ngram(cls, tgt_dict):
+        logger.info("| building ASR decoder with ngram for nbest decoding...")
+        decoding = DecodingConfig()
+        decoding.type='kenlm'
+        decoding.lmpath='/workspace/librispeech_model/decoder/4-gram.arpa'
+        decoding.lexicon='/workspace/librispeech_model/librispeech_lexicon.lst'
+        decoding.beamthreshold=20
+        decoding.nbest=8
+        decoding.lmweight=1.57
+        decoding.silweight=-0.15131225610039412
+        decoding.wordscore=-0.64
+        decoding.beam=500
+        # import pdb; pdb.set_trace()
         return Decoder(decoding, tgt_dict)
 
     @classmethod
@@ -526,16 +633,44 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         Returns:
             greedy decoding results
         """
-        transcripts = self.asr_eval_decoder.decode(ctc_emissions)
+        transcripts = self.asr_eval_decoder.decode(ctc_emissions.float().cpu().contiguous())
         # <examples.speech_recognition.new.decoders.viterbi_decoder.ViterbiDecoder object at 0x7f793c32d520>
-        transcripts = [
+        greedy_transcripts = [
             self.process_sentence(transcripts[b][0])
             for b in range(ctc_emissions.size(0))
         ]
 
         # import pdb; pdb.set_trace()
-        return transcripts
+        return greedy_transcripts
 
+    def get_nbest_decoding_results(self, ctc_emissions):
+        """
+        Args:
+            ctc_emissions, 
+
+        Returns:
+            nbest decoding results
+        """
+        # import pdb; pdb.set_trace()
+
+        # transcripts = self.asr_eval_decoder.decode(ctc_emissions.float().cpu().contiguous())
+        # greedy_transcripts = [
+        #     self.process_sentence(transcripts[b][0])
+        #     for b in range(ctc_emissions.size(0))
+        # ]
+
+        transcripts = self.asr_eval_decoder_with_ngram.decode(ctc_emissions.float().cpu().contiguous())
+        nbest_transcripts = []
+        for b in range(ctc_emissions.size(0)):
+            # tmp = []
+            for n in range(self.asr_eval_decoder_with_ngram.nbest):
+                # tmp.append(self.process_sentence(transcripts[b][n]))
+                nbest_transcripts.append(self.process_sentence(transcripts[b][n]))
+            # nbest_transcripts.append(tmp)
+
+        # import pdb; pdb.set_trace()
+
+        return nbest_transcripts
 
     def get_ctc_emissions(self, input):
         """
@@ -573,7 +708,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         return cnn_outputs, ctc_emissions, w2v2_encoder_results
 
-    def get_mask_indices_for_audio_and_text(self, ctc_emissions, transcripts, cnn_outputs):
+    def get_mask_indices_for_audio_and_text(self, ctc_emissions, transcripts, cnn_outputs, randomly_mask=False):
         """
         Args:
             ctc_emissions, 
@@ -599,6 +734,18 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             segments = merge_repeats(path, sent)
             word_segments = merge_words(segments)
 
+            '''
+            (Pdb) len(segments)
+            429
+            (Pdb) len(word_segments)
+            75
+            '''
+
+            # import pdb; pdb.set_trace()
+
+            tmp = [seg.score for seg in word_segments]
+            # print(np.mean(tmp))
+
             # mask_indice = []
             # for seg in segments:
             #     if seg.score <0.95:
@@ -609,12 +756,23 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             mask_indice = []
             dummy=10
             cnn_output_mask = torch.zeros(cnn_output.size(0))
-            for seg in word_segments:
-                if seg.score <0.8:
-                    mask_indice += [0]*len(seg.label)
-                    cnn_output_mask[seg.start:seg.end]=1
+
+            # import pdb; pdb.set_trace()
+            num_segments = len(word_segments)
+            for (seg, n) in zip(word_segments, num_segments):
+                if not randomly_mask:
+                    # if seg.score < 0.7:
+                    if seg.score < np.mean(tmp):
+                        mask_indice += [0]*len(seg.label)
+                        cnn_output_mask[seg.start:seg.end]=1
+                    else:
+                        mask_indice += [dummy]*len(seg.label)
                 else:
-                    mask_indice += [dummy]*len(seg.label)
+                    if torch.rand(1).item() < 0.65:
+                        mask_indice += [0]*len(seg.label)
+                        cnn_output_mask[seg.start:seg.end]=1
+                    else:
+                        mask_indice += [dummy]*len(seg.label)        
                 mask_indice.append(0)
             mask_indices.append(mask_indice)
             cnn_output_mask_indices.append(cnn_output_mask)
@@ -644,6 +802,8 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         roberta_input = roberta_input.masked_fill(torch.logical_not(bpe_mask),self.roberta_mask_idx).to(self.device)
 
+        # import pdb; pdb.set_trace()
+
         return roberta_input
 
 
@@ -659,27 +819,53 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         target = sample['target']
         target_padding_mask = (target==self.roberta_src_dict.pad())
-        target_bos_marker=(sample['target']==self.roberta_src_dict.bos())
-        target_eos_marker=(sample['target']==self.roberta_src_dict.eos())
+        target_bos_marker = (sample['target']==self.roberta_src_dict.bos())
+        target_eos_marker = (sample['target']==self.roberta_src_dict.eos())
         target_len = sample['target_lengths']
         input = sample['net_input']
 
-        if self.ema is None:
+        transcripts = None
+        nbest_transcripts = None
+
+        if not self.ema_pretraining :
             ##############################################################################################################
             ###### for ASR finetuning, we hv to use gold transcription because of compute loss non-autoregressively ######
             ##############################################################################################################
             cnn_outputs, ctc_emissions, w2v2_encoder_results = self.get_ctc_emissions(input)
-            transcripts = None
             if self.training:
-                # transcripts = self.get_greedy_decoding_results(ctc_emissions)
-                uniform_mask = torch.FloatTensor(target.size()).uniform_() > 0.65
-                target = target.masked_fill(uniform_mask.to(self.device),self.roberta_mask_idx)
-                target = target.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
-                target = target.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
+                # uniform_mask = torch.FloatTensor(target.size()).uniform_() > 0.65
+                uniform_mask = torch.FloatTensor(target.size()).uniform_() > torch.rand(1).item()
+                masked_target = target.masked_fill(uniform_mask.to(self.device),self.roberta_mask_idx)
+                masked_target = masked_target.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
+                masked_target = masked_target.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
                 
-                roberta_output = self.text_encoder(target.masked_fill(uniform_mask.to(self.device),self.roberta_mask_idx), features_only=True)[0]
+                # import pdb; pdb.set_trace()
+                # print(target_len)
+                # print(masked_target.eq(self.roberta_mask_idx).sum(-1))
+                # print((torch.FloatTensor(target.size()).uniform_() > torch.rand(1).item()).eq(1).sum(-1))
+
+                roberta_output = self.text_encoder(masked_target, features_only=True)[0]
                 decoder_out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=target_padding_mask)
                 # import pdb; pdb.set_trace()
+
+                # # get n-best transcripts
+                # transcripts = self.get_greedy_decoding_results(ctc_emissions)
+                # nbest_transcripts = self.get_nbest_decoding_results(ctc_emissions)
+                # import pdb; pdb.set_trace()
+                # roberta_input, roberta_input_mask, roberta_input_length = self.encode_batch_sent_for_roberta(transcripts)
+
+                # # padding mask for roberta input
+                # mask_indices, _ = self.get_mask_indices_for_audio_and_text(ctc_emissions, transcripts, cnn_outputs['x'])
+                # target_padding_mask = torch.logical_not(roberta_input_mask).to(self.device)
+                # target_bos_marker=(roberta_input==self.roberta_src_dict.bos()).to(self.device)
+                # target_eos_marker=(roberta_input==self.roberta_src_dict.eos()).to(self.device)
+
+                # masked_roberta_input = self.apply_mask_for_text(transcripts, roberta_input, roberta_input_length, mask_indices)
+                # masked_roberta_input = masked_roberta_input.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
+                # masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
+
+                # roberta_output = self.text_encoder(masked_roberta_input, features_only=True)[0]
+                # decoder_out_for_mwer, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=torch.logical_not(roberta_input_mask).to(self.device))
             else:
                 # get ctc output and make bpe roberta sentence
                 transcripts = self.get_greedy_decoding_results(ctc_emissions)
@@ -691,20 +877,35 @@ class Data2VecAudioTextModel(BaseFairseqModel):
                 target_bos_marker=(roberta_input==self.roberta_src_dict.bos()).to(self.device)
                 target_eos_marker=(roberta_input==self.roberta_src_dict.eos()).to(self.device)
 
+                # import pdb; pdb.set_trace()
+
                 masked_roberta_input = self.apply_mask_for_text(transcripts, roberta_input, roberta_input_length, mask_indices)
                 masked_roberta_input = masked_roberta_input.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
                 masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
 
-                num_iter = 10
+                # import pdb; pdb.set_trace()
+
+                batch_num_mask = masked_roberta_input.eq(self.roberta_mask_idx).sum(-1)
+                num_mask = torch.max(batch_num_mask).item()
+                num_iter_ = 10
+
+                num_iter = num_mask if num_mask > num_iter_ else num_iter_
+                logger.info("| ! The number of iteration is {} (according to the number of mask tokens)".format(num_iter))
                 for i in range(num_iter):
                     roberta_output = self.text_encoder(masked_roberta_input, features_only=True)[0]
                     decoder_out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=torch.logical_not(roberta_input_mask).to(self.device))
                     prob, pred=F.softmax(decoder_out,dim=-1).max(dim=-1)
-                    # import pdb; pdb.set_trace()
-                    logger.info("| {} th average prob of decoder outs are {}".format(i, prob.masked_fill(target_padding_mask,0).sum()/torch.sum(roberta_input_length)))
+                    logger.info("| {} th, The number of tokens is {}".format(i, roberta_input_length.tolist()))
+                    logger.info("| {} th, The number of masked tokens is {}".format(i, (masked_roberta_input.eq(self.roberta_mask_idx).sum(-1)).tolist()))
+                    logger.info("| {} th, average prob of decoder outs are {} \n".format(i, prob.masked_fill(target_padding_mask,0).sum()/torch.sum(roberta_input_length)))
+                    logger.info("")
+
                     if i==(num_iter-1):
                         break;
-                    confident_idx = prob > 0.7
+
+                    # confident_idx = prob > 0.9
+                    confident_idx = prob > 0.85
+
                     pred = pred.masked_fill(torch.logical_not(confident_idx),self.roberta_mask_idx).to(self.device)
                     masked_roberta_input = pred.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
                     masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
@@ -721,7 +922,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             roberta_input, roberta_input_mask, roberta_input_length = self.encode_batch_sent_for_roberta(transcripts)
 
             # 3. Get Masked indices for Roberta Inputs (text)
-            mask_indices, cnn_output_mask_indices = self.get_mask_indices_for_audio_and_text(ctc_emissions, transcripts, cnn_outputs['x'])
+            mask_indices, cnn_output_mask_indices = self.get_mask_indices_for_audio_and_text(ctc_emissions, transcripts, cnn_outputs['x'], randomly_mask=True)
             target_padding_mask = torch.logical_not(roberta_input_mask).to(self.device)
             target_bos_marker=(roberta_input==self.roberta_src_dict.bos()).to(self.device)
             target_eos_marker=(roberta_input==self.roberta_src_dict.eos()).to(self.device)
@@ -745,15 +946,19 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             masked_roberta_output = self.text_encoder(masked_roberta_input, features_only=True)[0]
             x, _ = self.decoder(prev_output_tokens = masked_roberta_output, encoder_out = masked_w2v2_encoder_results, decoder_input_mask=target_padding_mask, features_only=True)
 
+            # roberta_output = self.text_encoder(roberta_input, features_only=True)[0]
 
             # 5. EMA teacher inference
             with torch.no_grad():
                 # use EMA parameter as the teacher
-                self.ema.model.eval()
+                # self.ema.model.eval()
+                self.ema_decoder.eval()
+                self.ema_text_encoder.eval()
 
+                roberta_output = self.ema_text_encoder(roberta_input, features_only=True)[0]
                 decoder_out = self.ema.model( # just decoder
-                    prev_output_tokens = masked_roberta_output,
-                    encoder_out = masked_w2v2_encoder_results,
+                    prev_output_tokens = roberta_output,
+                    encoder_out = w2v2_encoder_results,
                     return_all_hiddens=True,
                     features_only=True,
                 )
@@ -845,7 +1050,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
             # logging other values
             other_logs = {
-                "ema_decay": self.ema.get_decay() * 1000
+                "ema_decay": self.ema_decoder.get_decay() * 1000
             }
             result["logs"] = other_logs
             return result
@@ -945,10 +1150,6 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         batch, batch_mask, length = batch_pad(tmp, self.roberta_src_dict.pad_index)
 
         return batch, batch_mask, length
-
-    def upgrade_state_dict_named(self, state_dict, name):
-        super().upgrade_state_dict_named(state_dict, name)
-        return state_dict
 
     def max_positions(self):
         """Maximum length supported by the model."""
@@ -1506,6 +1707,79 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             state_dict[version_key] = torch.Tensor([1])
 
         return state_dict
+
+    # def forward_length(self, normalize, encoder_out):
+    #     enc_feats = encoder_out["encoder_out"][0]  # T x B x C
+    #     if len(encoder_out["padding_mask"]) > 0:
+    #         src_masks = encoder_out["padding_mask"][0]  # B x T
+    #     else:
+    #         src_masks = None
+    #     enc_feats = _mean_pooling(enc_feats, src_masks)
+    #     if self.sg_length_pred:
+    #         enc_feats = enc_feats.detach()
+    #     length_out = F.linear(enc_feats, self.embed_length.weight)
+    #     return F.log_softmax(length_out, -1) if normalize else length_out
+
+    # def forward_length_prediction(self, length_out, encoder_out, tgt_tokens=None):
+    #     enc_feats = encoder_out["encoder_out"][0]  # T x B x C
+    #     if len(encoder_out["padding_mask"]) > 0:
+    #         src_masks = encoder_out["padding_mask"][0]  # B x T
+    #     else:
+    #         src_masks = None
+    #     if self.pred_length_offset:
+    #         if src_masks is None:
+    #             src_lengs = enc_feats.new_ones(enc_feats.size(1)).fill_(
+    #                 enc_feats.size(0)
+    #             )
+    #         else:
+    #             src_lengs = (~src_masks).transpose(0, 1).type_as(enc_feats).sum(0)
+    #         src_lengs = src_lengs.long()
+
+    #     if tgt_tokens is not None:
+    #         # obtain the length target
+    #         tgt_lengs = tgt_tokens.ne(self.padding_idx).sum(1).long()
+    #         if self.pred_length_offset:
+    #             length_tgt = tgt_lengs - src_lengs + 128
+    #         else:
+    #             length_tgt = tgt_lengs
+    #         length_tgt = length_tgt.clamp(min=0, max=255)
+
+    #     else:
+    #         # predict the length target (greedy for now)
+    #         # TODO: implementing length-beam
+    #         pred_lengs = length_out.max(-1)[1]
+    #         if self.pred_length_offset:
+    #             length_tgt = pred_lengs - 128 + src_lengs
+    #         else:
+    #             length_tgt = pred_lengs
+
+    #     return length_tgt
+
+def _mean_pooling(enc_feats, src_masks):
+    # enc_feats: T x B x C
+    # src_masks: B x T or None
+    if src_masks is None:
+        enc_feats = enc_feats.mean(0)
+    else:
+        src_masks = (~src_masks).transpose(0, 1).type_as(enc_feats)
+        enc_feats = (
+            (enc_feats / src_masks.sum(0)[None, :, None]) * src_masks[:, :, None]
+        ).sum(0)
+    return enc_feats
+
+def _argmax(x, dim):
+    return (x == x.max(dim, keepdim=True)[0]).type_as(x)
+
+
+def _uniform_assignment(src_lens, trg_lens):
+    max_trg_len = trg_lens.max()
+    steps = (src_lens.float() - 1) / (trg_lens.float() - 1)  # step-size
+    # max_trg_len
+    index_t = utils.new_arange(trg_lens, max_trg_len).float()
+    index_t = steps[:, None] * index_t[None, :]  # batch_size X max_trg_len
+    index_t = torch.round(index_t).long().detach()
+    return index_t
+
 
 
 def Linear(in_features, out_features, bias=True):
