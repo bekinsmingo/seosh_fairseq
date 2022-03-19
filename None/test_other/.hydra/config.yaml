@@ -1,6 +1,6 @@
 _name: null
 task:
-  _name: audio_pretraining
+  _name: audio_finetuning
   data: /workspace/librispeech_model/am/fairseq_audio_data2
   labels: ltr
   binarized_dataset: false
@@ -14,22 +14,75 @@ task:
   inferred_w2v_config: null
   tpu: ${common.tpu}
   text_compression_level: none
+  eval_wer: false
+  eval_wer_config:
+    _name: null
+    beam: 5
+    nbest: 1
+    max_len_a: 0.0
+    max_len_b: 200
+    min_len: 1
+    match_source_len: false
+    unnormalized: false
+    no_early_stop: false
+    no_beamable_mm: false
+    lenpen: 1.0
+    unkpen: 0.0
+    replace_unk: null
+    sacrebleu: false
+    score_reference: false
+    prefix_size: 0
+    no_repeat_ngram_size: 0
+    sampling: false
+    sampling_topk: -1
+    sampling_topp: -1.0
+    constraints: null
+    temperature: 1.0
+    diverse_beam_groups: -1
+    diverse_beam_strength: 0.5
+    diversity_rate: -1.0
+    print_alignment: null
+    print_step: false
+    lm_path: null
+    lm_weight: 0.0
+    iter_decode_eos_penalty: 0.0
+    iter_decode_max_iter: 10
+    iter_decode_force_max_iter: false
+    iter_decode_with_beam: 1
+    iter_decode_with_external_reranker: false
+    retain_iter_history: false
+    retain_dropout: false
+    retain_dropout_modules: null
+    decoding_format: null
+    no_seed_provided: false
+  eval_wer_tokenizer: null
+  eval_wer_post_process: letter
+  eval_bleu: false
+  eval_bleu_detok: null
+  eval_bleu_detok_args: '{}'
+  eval_tokenized_bleu: false
+  eval_bleu_remove_bpe: null
+  eval_bleu_args: '{}'
+  eval_bleu_print_samples: false
+  autoregressive: false
 decoding:
   _name: null
-  nbest: 1
+  nbest: 50
   unitlm: false
-  lmpath: ???
-  lexicon: null
-  beam: 1
-  beamthreshold: 50.0
-  beamsizetoken: null
-  wordscore: -1.0
+  lmpath: /workspace/librispeech_model/decoder/4-gram.arpa
+  lexicon: /workspace/librispeech_model/librispeech_lexicon.lst
+  beam: 1500
+  beamthreshold: 20.0
+  beamsizetoken: 100
+  wordscore: 0.52
   unkweight: -.inf
   silweight: 0.0
-  lmweight: 2.0
-  rescoring: false
-  rescoringweight: 2.0
-  type: viterbi
+  lmweight: 1.74
+  rescoring: true
+  rescoringweight: 0.8149553446097952
+  rescoringwordlenweight: -0.21418670094166092
+  rescoringlmpath: /workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
+  type: kenlm
   unique_wer_file: false
   results_path: null
 common:
@@ -71,7 +124,7 @@ common:
   plasma_path: /tmp/plasma
 common_eval:
   _name: null
-  path: /workspace/librispeech_model/am/jgkang/jgkang_w2v2_ctc_letter.pt
+  path: /workspace/librispeech_model/am/w2v2/wav2vec_small_960h.pt
   post_process: letter
   quiet: true
   model_overrides: '{}'

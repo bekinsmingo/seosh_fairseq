@@ -17,12 +17,9 @@ from fairseq.dataclass.constants import DDP_BACKEND_CHOICES
 import logging
 logger = logging.getLogger(__name__)
 
-from itertools import groupby
-import editdistance
-import numpy as np
 
 @dataclass
-class CrossEntropyforData2vecCriterionConfig(FairseqDataclass):
+class DVRLCriterionConfig(FairseqDataclass):
     sentence_avg: bool = II("optimization.sentence_avg")
     ddp_backend: DDP_BACKEND_CHOICES = II("distributed_training.ddp_backend")
     label_smoothing: float = field(
@@ -71,8 +68,8 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=T
     return loss, nll_loss
 
 
-@register_criterion("cross_entropy_for_data2vec", dataclass=CrossEntropyforData2vecCriterionConfig)
-class CrossEntropyCriterionforData2Vec(FairseqCriterion):
+@register_criterion("dvrl_criterion", dataclass=DVRLCriterionConfig)
+class DVRLCriterion(FairseqCriterion):
     def __init__(self, task, sentence_avg, label_smoothing, ignore_prefix_size=0, report_accuracy=False, mwer=False, ctc=False, zero_infinity=False):
         super().__init__(task)
         self.sentence_avg = sentence_avg
@@ -87,8 +84,6 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
         self.eos_idx = 0
         self.zero_infinity = zero_infinity
 
-        self.eps_for_reinforce = np.finfo(np.float32).eps.item()
-
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
 
@@ -99,25 +94,22 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
         """
 
         # net_output = model(**sample["net_input"])
-        net_output, ctc_transcripts, target_padding_mask, target_for_mlm, net_output_from_nbest_list, nbest_target_padding_mask, upsampled_decoder_out, upsampled_padding_mask = model(sample)
+        net_output, ctc_transcripts, target_padding_mask, net_output_from_nbest_list, nbest_target_padding_mask, upsampled_decoder_out, upsampled_padding_mask = model(sample)
         
-        ## Total loss
-        loss = torch.tensor(0).to(model.device).float()
-
-        ## for CMLM (masked-ctc) loss
-        ce_loss = torch.tensor(0).to(model.device).float()
+        ce_loss = torch.tensor(0)
         if model.decoder.adaptive_softmax is not None:
             ce_loss, lprobs = self.compute_adaptive_loss(model, net_output, sample, reduce=reduce)
             # TODO: adaptive softmax for evaluation mode
-        elif (self.eps > 0.0) and (model.training):
-            ce_loss, lprobs = self.compute_label_smoothed_loss(model, net_output, sample, target_for_mlm, reduce=reduce)
+        elif self.eps > 0.0:
+            ce_loss, lprobs = self.compute_label_smoothed_loss(model, net_output, sample, reduce=reduce)
+            # import pdb; pdb.set_trace()
         else:
-            ce_loss, lprobs = self.compute_loss(model, net_output, sample, target_for_mlm, reduce=reduce)
-        loss += ce_loss
+            ce_loss, lprobs = self.compute_loss(model, net_output, sample, reduce=reduce)
 
-        # import pdb; pdb.set_trace()
+        # for calculate WER (MWER loss)
 
-        ## for ctc loss
+
+        # for calculate ctc
         ctc_loss = torch.tensor(0)
         ctc_lprobs = None
         if self.ctc:
@@ -128,57 +120,29 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
                 ctc_loss, ctc_lprobs = self.compute_ctc_loss(model, upsampled_decoder_out, sample, target_padding_mask, upsampled_padding_mask)
             else:
                 ctc_loss, ctc_lprobs = self.compute_ctc_loss(model, upsampled_decoder_out, sample, nbest_target_padding_mask, upsampled_padding_mask)
-        loss += ctc_loss
-
-
-        ## for MWER loss
-        mwer_loss = torch.tensor(0)
-        # self.mwer = True
-        if self.mwer:
-            self.pad_idx = model.roberta_src_dict.pad()
-            self.eos_idx = model.roberta_src_dict.eos()
-            if net_output_from_nbest_list is None:
-                mwer_loss, _ = self.compute_mwer_loss(model, net_output, sample, target_padding_mask)
-            else:
-                mwer_loss, _ = self.compute_mwer_loss(model, net_output_from_nbest_list, sample, nbest_target_padding_mask)
-        loss += mwer_loss
-
-        # lprobs.masked_fill(target_padding_mask,self.padding_idx)
-        # model.get_normalized_probs(net_output, log_probs=True).max(-1)[1].masked_fill(target_padding_mask,self.padding_idx)[:4]
-        # _.max(-1)[1].masked_fill(nbest_target_padding_mask,self.padding_idx)[:4]
-
-        '''
-        (Pdb) ce_loss; ctc_loss; mwer_loss; loss
-        tensor(532.1523, device='cuda:0', grad_fn=<AddBackward0>)
-        tensor(99.8450, device='cuda:0', grad_fn=<SumBackward0>)
-        tensor(-5.2061, device='cuda:0', grad_fn=<MeanBackward0>)
-        tensor(626.7913, device='cuda:0', grad_fn=<AddBackward0>)
-        '''
-
+            loss = ctc_loss + ce_loss
+        else:
+            loss = ce_loss
 
         sample_size = (sample["target"].size(0) if self.sentence_avg else sample["ntokens"])
         ctc_sample_size = (upsampled_decoder_out.size(0) if self.sentence_avg else (~upsampled_padding_mask).long().sum(-1))
-        if net_output_from_nbest_list is None:
-            mwer_sample_size = (sample["target"].size(0) if self.sentence_avg else sample["ntokens"])
-        else:
-            mwer_sample_size = (net_output_from_nbest_list.size(0) if self.sentence_avg else sample["ntokens"]*(net_output_from_nbest_list.size(0)//sample["target"].size(0)))
 
         if not model.training:
-            loss = torch.tensor(0).float()
+            loss = torch.tensor(0)
 
         logging_output = {
             "loss": loss.data,
             "ce_loss" : ce_loss.data,
             "final_ctc_loss": utils.item(ctc_loss.data) if self.ctc else 0,
-            "mwer_loss": utils.item(mwer_loss.data) if self.mwer else 0,
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
             "ctc_sample_size": ctc_sample_size,
-            "mwer_sample_size": mwer_sample_size,
         }
 
         if not model.training:
+            from itertools import groupby
+            import editdistance
 
             with torch.no_grad():
                 c_err = 0
@@ -295,143 +259,15 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
                     logger.info("BATCH WER : {}".format(safe_round(final_ctc_w_errs*100/w_len,3)))
                 logger.info("-----------------------------------------------")
 
+
         return loss, sample_size, logging_output
-
-
-    def compute_loss(self, model, net_output, sample, target_for_mlm, reduce=True):
-        lprobs = model.get_normalized_probs(net_output, log_probs=True)
-        # target = model.get_targets(sample, net_output)
-        target = target_for_mlm
-        if target is not None:
-            if target.size(1) > lprobs.size(1):
-                target = target[:lprobs.size(0)]
-            elif target.size(1) < lprobs.size(1):
-                tmp = torch.ones(target.size(0),lprobs.size(1) - target.size(1)).long()
-                target = torch.cat((target,tmp.to(model.device)),-1) 
-        # loss = torch.tensor(0)
-        if model.training:
-            lprobs = lprobs.view(-1, lprobs.size(-1))
-            target = target.view(-1)
-            loss = F.nll_loss(
-                lprobs,
-                target,
-                ignore_index=self.padding_idx,
-                reduction="sum" if reduce else "none",
-            )
-            # import pdb; pdb.set_trace()
-        else:
-            loss = torch.tensor(0).float()
-        return loss, lprobs
-
-
-    def compute_label_smoothed_loss(self, model, net_output, sample, target_for_mlm, reduce=True):
-        lprobs = model.get_normalized_probs(net_output, log_probs=True) # torch.Size([8, 48, 50264])
-        # target = model.get_targets(sample, net_output)
-        target = target_for_mlm
-        if target is not None:
-            if target.size(1) > lprobs.size(1):
-                target = target[:lprobs.size(0)]
-            elif target.size(1) < lprobs.size(1):
-                tmp = torch.ones(target.size(0),lprobs.size(1) - target.size(1)).long()
-                target = torch.cat((target,tmp.to(model.device)),-1) 
-        # import pdb; pdb.set_trace()
-        # model.get_normalized_probs(net_output, log_probs=True).size() ; model.get_targets(sample, net_output).size(); target.size();lprobs.size()
-        if model.training:
-            lprobs = lprobs.view(-1, lprobs.size(-1)) # torch.Size([384, 50264])
-            target = target.view(-1)
-            if self.ignore_prefix_size > 0:
-                # lprobs: B x T x C
-                lprobs = lprobs[:, self.ignore_prefix_size :, :].contiguous()
-                target = target[:, self.ignore_prefix_size :].contiguous()
-            loss, nll_loss = label_smoothed_nll_loss(
-                lprobs,
-                target,
-                self.eps,
-                ignore_index=self.padding_idx,
-                reduce=reduce,
-            )
-            # return loss, nll_loss
-        else:
-            loss = torch.tensor(0).float()
-        # import pdb; pdb.set_trace()
-        return loss, lprobs
-
-
-    def compute_mwer_loss(self, model, net_output, sample, target_padding_mask):
-        lprobs = model.get_normalized_probs(
-            net_output, log_probs=True
-        ).contiguous() # B, T, C
-
-        # lprobs_ = lprobs.transpose(0, 1) # T, B, C
-
-        target = sample["target"]
-        if target.size(0) != lprobs.size(0):
-            repeated_target = torch.zeros(lprobs.size(0),target.size(1))
-            for i in range(lprobs.size(0)//target.size(0)):
-                repeated_target[target.size(0)*i:target.size(0)*(i+1)] = target.clone()
-            target = repeated_target.long()
-
-        argmax_preds = lprobs.argmax(dim=-1)
-        argmax_preds = argmax_preds.masked_fill(target_padding_mask,self.padding_idx)
-
-        ## get WERs for MWER (REINFORCE) loss
-        wers = []
-        for i, (lp, t) in enumerate(zip(argmax_preds, target)):
-            # Processing prediction and target tensors to string
-            p = (t != model.roberta_src_dict.pad()) & (t != model.roberta_src_dict.eos())
-            targ = t[p]
-            targ_units =  model.roberta_src_dict.string(targ).replace('<pad>','').replace('<mask>','').replace('<s>','').replace('</s>','').replace('<unk>','')
-            targ_units_arr = model.bpe.decode(targ_units)
-
-
-            toks = lp
-            # toks = lp.argmax(dim=-1)
-            bpe_sentence = model.roberta_src_dict.string(toks).replace('<pad>','').replace('<mask>','').replace('<s>','').replace('</s>','').replace('<unk>','')
-            bpe_sentence = bpe_sentence.replace('madeupword0000','').replace('madeupword0001','').replace('madeupword0002','').replace('madeupword0003','').replace('madeupword0004','').replace('madeupword0005','').replace('madeupword0006','')
-            # import pdb; pdb.set_trace()
-            pred_units_arr = model.bpe.decode(bpe_sentence)
-
-            # calculate WER
-            targ_words=targ_units_arr.split(' ')
-            pred_words=pred_units_arr.split(' ')
-            w_errs = editdistance.eval(pred_words, targ_words)
-            w_len = len(targ_words)
-            wers.append(safe_round(w_errs*100/w_len,3))
-
-        wers_ = torch.FloatTensor(wers)
-        wers = (wers_ - torch.mean(wers_)) / (wers_.std() + self.eps_for_reinforce)
-        wers = -wers # because WERs are not good Reward, the lower is the better
-        # import pdb; pdb.set_trace()
-        '''
-        (Pdb) wers_; wers
-        tensor([ 3.0300,  2.3810,  4.7620,  0.0000,  0.0000, 15.7890,  0.0000,  0.0000,
-                3.0300, 11.9050,  0.0000,  4.1670,  0.0000, 10.5260, 13.8890,  6.4520])
-        tensor([ 0.3168,  0.4366, -0.0030,  0.8762,  0.8762, -2.0388,  0.8762,  0.8762,
-                0.3168, -1.3218,  0.8762,  0.1068,  0.8762, -1.0672, -1.6880, -0.3150])
-        '''
-        
-        selected_lprobs = torch.gather(lprobs,-1,lprobs.max(-1)[1].unsqueeze(-1)).squeeze(-1)
-        # selected_lprobs = selected_lprobs.masked_fill(target_padding_mask,0)
-        # selected_lprobs = selected_lprobs.masked_fill(target_padding_mask,-torch.tensor(float('inf')))
-        mwer_loss = [ -lprob[:(~mask).sum()].sum() * wer for lprob, mask, wer in zip(selected_lprobs, target_padding_mask, wers)] # original implementation : (NLL * Reward)
-        loss = torch.stack(mwer_loss).mean()
-        '''
-        (Pdb) torch.stack(mwer_loss); loss
-        tensor([  2.7242,   6.6850,  -0.0309,   6.2604,   7.2141, -22.5037,   9.5414, 7.2978,   
-                3.5687, -23.5570,   8.0708,   0.9697,   6.9169,  -8.5435, -29.0875,  -3.6746], device='cuda:0', grad_fn=<StackBackward>)
-        tensor(-1.7593, device='cuda:0', grad_fn=<MeanBackward0>)
-        '''
-        # import pdb; pdb.set_trace()
-
-        return loss, lprobs
-
 
     def compute_ctc_loss(self, model, net_output, sample, target_padding_mask, upsampled_padding_mask):
         lprobs = model.get_normalized_probs(
             net_output, log_probs=True
-        ).contiguous()  # (B, T, C) from the encoder # e.g. torch.Size([16, 96, 50265])
+        ).contiguous()  # (T, B, C) from the encoder # e.g. torch.Size([634, 8, 32])
 
-        lprobs_ = lprobs.transpose(0, 1) # T, B, C, torch.Size([96, 16, 50265])
+        lprobs_ = lprobs.transpose(0, 1) # B, T, C
 
         non_padding_mask = ~upsampled_padding_mask
         input_lengths = non_padding_mask.long().sum(-1)
@@ -491,25 +327,64 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
 
         return loss, logits
 
+    def compute_loss(self, model, net_output, sample, reduce=True):
+        lprobs = model.get_normalized_probs(net_output, log_probs=True)
+        # loss = torch.tensor(0)
+        if model.training:
+            lprobs = lprobs.view(-1, lprobs.size(-1))
+            target = model.get_targets(sample, net_output).view(-1)
+            loss = F.nll_loss(
+                lprobs,
+                target,
+                ignore_index=self.padding_idx,
+                reduction="sum" if reduce else "none",
+            )
+            # import pdb; pdb.set_trace()
+        else:
+            loss = torch.tensor(0)
+        return loss, lprobs
+
+    def compute_label_smoothed_loss(self, model, net_output, sample, reduce=True):
+        lprobs = model.get_normalized_probs(net_output, log_probs=True) # torch.Size([8, 48, 50264])
+        # import pdb; pdb.set_trace()
+        if model.training:
+            target = model.get_targets(sample, net_output)
+            lprobs = lprobs.view(-1, lprobs.size(-1)) # torch.Size([384, 50264])
+            target = target.view(-1)
+            if self.ignore_prefix_size > 0:
+                # lprobs: B x T x C
+                lprobs = lprobs[:, self.ignore_prefix_size :, :].contiguous()
+                target = target[:, self.ignore_prefix_size :].contiguous()
+            loss, nll_loss = label_smoothed_nll_loss(
+                lprobs,
+                target,
+                self.eps,
+                ignore_index=self.padding_idx,
+                reduce=reduce,
+            )
+            # return loss, nll_loss
+        else:
+            loss = torch.tensor(0)
+        # import pdb; pdb.set_trace()
+        return loss, lprobs
+
+
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
         """Aggregate logging outputs from data parallel training."""
         loss_sum = sum(log.get("loss", 0) for log in logging_outputs)
         ce_loss_sum = sum(log.get("ce_loss", 0) for log in logging_outputs)
         final_ctc_loss_sum = utils.item(sum(log.get("final_ctc_loss", 0) for log in logging_outputs))
-        mwer_loss_sum = utils.item(sum(log.get("mwer_loss", 0) for log in logging_outputs))
         
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
         ctc_sample_size = sum(log.get("ctc_sample_size", 0) for log in logging_outputs)
-        mwer_sample_size = sum(log.get("mwer_sample_size", 0) for log in logging_outputs)
         nsentences = utils.item(sum(log.get("nsentences", 0) for log in logging_outputs))
 
         # we divide by log(2) to convert the loss from base e to base 2
         metrics.log_scalar("loss", loss_sum / sample_size / math.log(2), sample_size, round=3)
         metrics.log_scalar("ce_loss", ce_loss_sum / sample_size / math.log(2), sample_size, round=3)
         metrics.log_scalar("final_ctc_loss", final_ctc_loss_sum / ctc_sample_size / math.log(2), ctc_sample_size, round=3)
-        metrics.log_scalar("mwer_loss", mwer_loss_sum / mwer_sample_size / math.log(2), mwer_sample_size, round=3)
         metrics.log_scalar("ntokens", ntokens)
         metrics.log_scalar("nsentences", nsentences)
 

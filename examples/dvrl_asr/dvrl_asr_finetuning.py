@@ -45,7 +45,7 @@ def label_len_fn(label):
 
 
 @dataclass
-class Data2VecAudioTextFinetuning(AudioPretrainingConfig):
+class DVRLAudioFinetuning(AudioPretrainingConfig):
     pretraining: bool = field(
         default=False,
         metadata={"help": ""},
@@ -64,15 +64,15 @@ class Data2VecAudioTextFinetuning(AudioPretrainingConfig):
     )
 
 
-@register_task("data2vec_audio_text_finetuning", dataclass=Data2VecAudioTextFinetuning)
-class Data2VecAudioTextFinetuningTask(AudioPretrainingTask):
+@register_task("dvrl_audio_finetuning", dataclass=DVRLAudioFinetuning)
+class DVRLAudioFinetuningTask(AudioPretrainingTask):
     """ """
 
-    cfg: Data2VecAudioTextFinetuning
+    cfg: DVRLAudioFinetuning
 
     def __init__(
         self,
-        cfg: Data2VecAudioTextFinetuning,
+        cfg: DVRLAudioFinetuning,
     ):
         super().__init__(cfg)
         self.blank_symbol = "<s>"
@@ -87,7 +87,7 @@ class Data2VecAudioTextFinetuningTask(AudioPretrainingTask):
         return None
 
     def load_dataset(
-        self, split: str, task_cfg: Data2VecAudioTextFinetuning = None, **kwargs
+        self, split: str, task_cfg: DVRLAudioFinetuning = None, **kwargs
     ):
         # Use load dataset of Audio Pretraining Task and add some finetuning 
         super().load_dataset(split, task_cfg, **kwargs)

@@ -93,7 +93,7 @@ from fairseq.modules import EMAModule, EMAModuleConfig
 import torch.distributed as dist
 import time
 
-# from fairseq.models.roberta.alignment_utils import align_bpe_to_words
+from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
 
 #########################################################
@@ -130,7 +130,7 @@ class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
         default=0.0, metadata={"help": "decoder layerdrop chance"}
     )
     decoder_attention_heads: int = field(
-        default=4, metadata={"help": "num decoder attention heads"}
+        default=8, metadata={"help": "num decoder attention heads"}
     )
     decoder_learned_pos: bool = field(
         default=False,
@@ -146,22 +146,22 @@ class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
         },
     )
     decoder_dropout: float = field(
-        default=0.0, metadata={"help": "dropout probability in the decoder"}
+        default=0.1, metadata={"help": "dropout probability in the decoder"}
     )
     decoder_attention_dropout: float = field(
-        default=0.0,
+        default=0.1,
         metadata={
             "help": "dropout probability for attention weights inside the decoder"
         },
     )
     decoder_activation_dropout: float = field(
-        default=0.0,
+        default=0.1,
         metadata={
             "help": "dropout probability after activation in FFN inside the decoder"
         },
     )
     max_target_positions: int = field(
-        default=512, metadata={"help": "max target positions"}
+        default=1024, metadata={"help": "max target positions"}
     )
     share_decoder_input_output_embed: bool = field(
         default=False, metadata={"help": "share decoder input and output embeddings"}
@@ -183,6 +183,15 @@ class Data2VecAudioTextConfig(Wav2Vec2AsrConfig):
     roberta_freeze: bool = field(
         default=True,
         metadata={"help": ""},
+    )
+
+    use_nbest_ctc_output: bool = field(
+        default=False,
+        metadata={"help": ""},
+    )
+
+    w2v2_ctc_nbest: int = field(
+        default=8, metadata={"help": ""}
     )
 
     
@@ -325,7 +334,12 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         # self.audio_encoder = self.audio_encoder_ctc.w2v_encoder.w2v_model.to(self.device)
         # self.device = next(self.audio_encoder.parameters()).device
         self.asr_eval_decoder = asr_eval_decoder
-        # self.asr_eval_decoder_with_ngram = asr_eval_decoder_with_ngram
+        self.asr_eval_decoder_with_ngram = asr_eval_decoder_with_ngram
+        if self.asr_eval_decoder_with_ngram is not None:
+            if self.cfg.w2v2_ctc_nbest > 1:
+                self.nbest = self.asr_eval_decoder_with_ngram.nbest
+            else:
+                self.nbest = 1
         self.asr_embedding_layer = asr_embedding_layer
         self.asr_tgt_dict = asr_tgt_dict
         self.mask_token = self.asr_tgt_dict.bos_index
@@ -341,6 +355,31 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         
         ## Transformer Decoder for bimodal training
         self.decoder = decoder.to(self.device)
+
+        ## for Upsampling
+        
+        # self.proj_bottleneck = nn.Linear(self.cfg.decoder_output_dim//2, self.cfg.decoder_output_dim*2)
+        # self.proj_for_upsampling = nn.Linear(self.cfg.decoder_output_dim*2, len(self.roberta_src_dict)) 
+
+        # tmp_cfg = {
+        #     'encoder_embed_dim': self.cfg.decoder_embed_dim,
+        #     'encoder_normalize_before': self.cfg.decoder_normalize_before,
+        #     'encoder_ffn_embed_dim': self.cfg.decoder_ffn_embed_dim,
+        #     'encoder_attention_heads': self.cfg.decoder_attention_heads,
+        #     'dropout': 0.1,
+        #     'activation_dropout': self.cfg.decoder_activation_dropout,
+        #     'relu_dropout': 0.1,
+        #     'attention_dropout': self.cfg.decoder_attention_dropout,
+        # }
+
+        tmp_cfg = TransformerConfig.from_namespace(self.cfg)
+        tmp_cfg.encoder.ffn_embed_dim = self.cfg.decoder_ffn_embed_dim
+
+        self.proj_bottleneck = Linear(self.cfg.decoder_output_dim, self.cfg.decoder_output_dim*2)
+        self.transformer_encoder_block_for_upsampling = transformer_layer.TransformerEncoderLayerBase(tmp_cfg, False)
+        self.transformer_encoder_block_for_upsampling.apply(init_bert_params)
+        self.proj_for_upsampling = nn.Linear(self.cfg.decoder_output_dim, len(self.roberta_src_dict), bias=False)
+        nn.init.normal_(self.proj_for_upsampling.weight, mean=0, std=self.cfg.decoder_output_dim**-0.5)
 
         ## ema training
         self.ema = None
@@ -552,8 +591,12 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         ## 1. Wav2Vec2 Encoder
         audio_encoder_ctc, w2v_encoder_embed_dim, asr_tgt_dict = cls.build_audio_encoder(cfg)
         asr_eval_decoder = cls.build_asr_eval_decoder(asr_tgt_dict)
-        # asr_eval_decoder_with_ngram = cls.build_asr_eval_decoder_with_ngram(asr_tgt_dict)
         asr_eval_decoder_with_ngram = None
+        if cfg.use_nbest_ctc_output:
+            if cfg.w2v2_ctc_nbest > 1:
+                asr_eval_decoder_with_ngram = cls.build_asr_eval_decoder_with_ngram(cfg, asr_tgt_dict)
+            else:
+                asr_eval_decoder_with_ngram = asr_eval_decoder
         asr_embedding_layer = build_embedding(asr_tgt_dict, cfg.decoder_embed_dim)
 
         ## 2. RoBERTa Encoder
@@ -591,17 +634,18 @@ class Data2VecAudioTextModel(BaseFairseqModel):
     def build_asr_eval_decoder(cls, tgt_dict):
         logger.info("| building ASR viterbi decoder for greedy decoding...")
         decoding = DecodingConfig()
+        decoding.type='viterbi'
         return Decoder(decoding, tgt_dict)
 
     @classmethod
-    def build_asr_eval_decoder_with_ngram(cls, tgt_dict):
+    def build_asr_eval_decoder_with_ngram(cls, cfg, tgt_dict):
         logger.info("| building ASR decoder with ngram for nbest decoding...")
         decoding = DecodingConfig()
         decoding.type='kenlm'
         decoding.lmpath='/workspace/librispeech_model/decoder/4-gram.arpa'
         decoding.lexicon='/workspace/librispeech_model/librispeech_lexicon.lst'
-        decoding.beamthreshold=20
-        decoding.nbest=8
+        decoding.beamthreshold=10
+        decoding.nbest=cfg.w2v2_ctc_nbest
         decoding.lmweight=1.57
         decoding.silweight=-0.15131225610039412
         decoding.wordscore=-0.64
@@ -623,7 +667,21 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             # state=state
         )
         model = models[0]
+        # import pdb; pdb.set_trace()
         return model, task.source_dictionary
+
+    @classmethod
+    def build_decoder(cls, cfg: Data2VecAudioTextConfig, w2v_encoder_embed_dim, tgt_dict, embed_tokens):
+        # return TransformerDecoder(cfg, tgt_dict, embed_tokens)
+        # return FairseqNATDecoder(cfg, tgt_dict, embed_tokens)
+        # return TransformerDecoderBase(cfg, w2v_encoder_embed_dim, tgt_dict, embed_tokens)
+
+        model = TransformerDecoderBase(cfg, w2v_encoder_embed_dim, tgt_dict, embed_tokens)
+        # (Pdb) model.layers[5].self_attn.out_proj.weight # tensor([[ 0.0455,  0.0246,  0.0582,  ...,  0.0298,  0.0113, -0.0377],
+        model.apply(init_bert_params)
+        # tensor([[-0.0147,  0.0064,  0.0146,  ...,  0.0203, -0.0205,  0.0263],
+        return model
+
 
     def get_greedy_decoding_results(self, ctc_emissions):
         """
@@ -643,7 +701,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         # import pdb; pdb.set_trace()
         return greedy_transcripts
 
-    def get_nbest_decoding_results(self, ctc_emissions):
+    def get_nbest_decoding_results(self, ctc_emissions, target_transcripts):
         """
         Args:
             ctc_emissions, 
@@ -660,14 +718,35 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         # ]
 
         transcripts = self.asr_eval_decoder_with_ngram.decode(ctc_emissions.float().cpu().contiguous())
-        nbest_transcripts = []
+        # nbest_transcripts = []
+        nbest_transcripts = list(range(ctc_emissions.size(0)*self.nbest))
+        
+        # for i in range(len(transcripts)):
+        #     print('{} th nbests : {}'.format(i,len(transcripts[i])))
+        # print()
+        # import pdb; pdb.set_trace()
+
         for b in range(ctc_emissions.size(0)):
             # tmp = []
-            for n in range(self.asr_eval_decoder_with_ngram.nbest):
+            current_batch_num_nbest = len(transcripts[b])
+            for n in range(self.nbest):
                 # tmp.append(self.process_sentence(transcripts[b][n]))
-                nbest_transcripts.append(self.process_sentence(transcripts[b][n]))
+                # nbest_transcripts.append(self.process_sentence(transcripts[b][n]))
+                if n+1 > current_batch_num_nbest:
+                    current_sent = target_transcripts[b]
+                else:
+                    current_sent = self.process_sentence(transcripts[b][n])
+                    if current_sent == '':
+                        current_sent = target_transcripts[b]
+                
+                nbest_transcripts[b+ctc_emissions.size(0)*n]=current_sent
             # nbest_transcripts.append(tmp)
-
+        # 0,6,12,18
+        # 1,7,13,19
+        # 2,8,14,20
+        # 3,9,15,21
+        # 4,10,16,22
+        # 5,11,17,23
         # import pdb; pdb.set_trace()
 
         return nbest_transcripts
@@ -724,6 +803,8 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         mask_indices = []
         cnn_output_mask_indices = []
 
+        random_mask_prob = 0
+
         for idx, (emission, transcript, cnn_output) in enumerate(zip(ctc_emissions, transcripts, cnn_outputs)):
             transcript = transcript.replace(' ','|') + ('|')
             tokens = [self.asr_tgt_dict.indices[c] for c in transcript]
@@ -741,8 +822,6 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             75
             '''
 
-            # import pdb; pdb.set_trace()
-
             tmp = [seg.score for seg in word_segments]
             # print(np.mean(tmp))
 
@@ -757,18 +836,22 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             dummy=10
             cnn_output_mask = torch.zeros(cnn_output.size(0))
 
+            if randomly_mask:
+                random_mask_prob = torch.distributions.Uniform(0, 1).sample().item()
+
             # import pdb; pdb.set_trace()
             num_segments = len(word_segments)
-            for (seg, n) in zip(word_segments, num_segments):
-                if not randomly_mask:
+            for seg in word_segments:
+                if random_mask_prob < 0.5:
                     # if seg.score < 0.7:
+                    # if seg.score < 0.85:
                     if seg.score < np.mean(tmp):
                         mask_indice += [0]*len(seg.label)
                         cnn_output_mask[seg.start:seg.end]=1
                     else:
                         mask_indice += [dummy]*len(seg.label)
                 else:
-                    if torch.rand(1).item() < 0.65:
+                    if torch.distributions.Uniform(0, 1).sample().item() > 0.75:
                         mask_indice += [0]*len(seg.label)
                         cnn_output_mask[seg.start:seg.end]=1
                     else:
@@ -794,7 +877,6 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             bpe_sent = bpe_sent[:bpe_length]
             alignment = align_bpe_to_words(self.roberta_src_dict, self.bpe, bpe_sent, sent)
             alignment_mask = (torch.Tensor(mask_indices[idx]) == 0)
-            # import pdb; pdb.set_trace()
             masked_alignment = torch.LongTensor(alignment).masked_fill(alignment_mask,0)
             _ = torch.stack([x[0] for x in groupby(masked_alignment)])
             confident_idx = torch.unique(_)[1:]
@@ -802,17 +884,39 @@ class Data2VecAudioTextModel(BaseFairseqModel):
 
         roberta_input = roberta_input.masked_fill(torch.logical_not(bpe_mask),self.roberta_mask_idx).to(self.device)
 
-        # import pdb; pdb.set_trace()
-
         return roberta_input
 
+    def post_process_roberta_output(self, prob, pred, target_padding_mask, mask_idx, target_eos_marker):
+        # import pdb; pdb.set_trace()
+        pred = pred.masked_fill(target_padding_mask, self.roberta_src_dict.pad())
+        prob = prob.masked_fill(target_padding_mask, 0)
+        # import pdb; pdb.set_trace()
 
-    @classmethod
-    def build_decoder(cls, cfg: Data2VecAudioTextConfig, w2v_encoder_embed_dim, tgt_dict, embed_tokens):
-        # return TransformerDecoder(cfg, tgt_dict, embed_tokens)
-        # return FairseqNATDecoder(cfg, tgt_dict, embed_tokens)
-        # return TransformerDecoderBase(cfg, w2v_encoder_embed_dim, tgt_dict, embed_tokens)
-        return TransformerDecoderBase(cfg, w2v_encoder_embed_dim, tgt_dict, embed_tokens)
+        new_pred = torch.ones_like(pred).to(self.device)
+        new_prob = torch.zeros_like(prob).to(self.device)
+        new_mask_idx = torch.zeros_like(mask_idx).to(self.device)
+        new_target_eos_marker = torch.zeros_like(target_eos_marker).to(self.device)
+        for i, (p, pr, m, tgt_eos) in enumerate(zip(pred, prob, mask_idx, target_eos_marker)):
+            # tmp = [(x[0].item(),y.item(),z.item()) for x,y,z in zip(groupby(pr),p,m)]
+            tmp = [(x[0].item(),y.item(),z.item(),e.item()) for x,y,z,e in zip(groupby(p),pr,m,tgt_eos)]
+            tmp_pred = []
+            tmp_prob = []
+            tmp_mask = []
+            tmp_target_eos_mask = []
+            for item in tmp:
+                tmp_pred.append(item[0])
+                tmp_prob.append(item[1])
+                tmp_mask.append(item[2])
+                tmp_target_eos_mask.append(item[3])
+            # import pdb; pdb.set_trace()
+            new_pred[i][:len(tmp_pred)]=torch.LongTensor(tmp_pred).to(self.device)
+            new_prob[i][:len(tmp_prob)]=torch.FloatTensor(tmp_prob).to(self.device)
+            new_mask_idx[i][:len(tmp_mask)]=torch.FloatTensor(tmp_mask).to(self.device)
+            new_target_eos_marker[i][:len(tmp_target_eos_mask)] =torch.FloatTensor(tmp_target_eos_mask).to(self.device)
+
+        new_padding_mask = (new_pred==self.roberta_src_dict.pad())
+
+        return new_prob, new_pred, new_padding_mask, new_mask_idx, new_target_eos_marker
 
 
     def forward(self, sample):
@@ -824,48 +928,202 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         target_len = sample['target_lengths']
         input = sample['net_input']
 
+        decoder_out = None
+        target_for_mlm = None
         transcripts = None
+
         nbest_transcripts = None
+        nbest_target_padding_mask = None
+        decoder_out_from_nbest_list = None
+
+        upsampled_decoder_out = None
+        upsampled_padding_mask = None
 
         if not self.ema_pretraining :
             ##############################################################################################################
             ###### for ASR finetuning, we hv to use gold transcription because of compute loss non-autoregressively ######
             ##############################################################################################################
+
             cnn_outputs, ctc_emissions, w2v2_encoder_results = self.get_ctc_emissions(input)
+
             if self.training:
+                ## get masked gold-transcript for explicit CE loss
                 # uniform_mask = torch.FloatTensor(target.size()).uniform_() > 0.65
-                uniform_mask = torch.FloatTensor(target.size()).uniform_() > torch.rand(1).item()
+                # uniform_mask = torch.FloatTensor(target.size()).uniform_() > torch.rand(1).item()
+                uniform_mask = torch.FloatTensor(target.size()).uniform_() > torch.distributions.Uniform(0.2, 0.8).sample().item()
                 masked_target = target.masked_fill(uniform_mask.to(self.device),self.roberta_mask_idx)
                 masked_target = masked_target.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
                 masked_target = masked_target.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
+
+                # roberta_output = self.text_encoder(masked_target, features_only=True)[0]
+                # out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=target_padding_mask, full_context_alignment=True, features_only=True)
+                # decoder_out = self.decoder.output_layer(out)
+
+                if self.cfg.use_nbest_ctc_output:
+                    target_transcripts = [ self.bpe.decode(self.roberta_src_dict.string(tokens).replace('<s>','').replace('</s>','').replace('<pad>','')).replace('.','').upper() for tokens in target]
+
+                    ## get greedy transcripts
+                    transcripts = self.get_greedy_decoding_results(ctc_emissions)
+
+                    if "" in transcripts:
+                        modified_greedy_transcripts = []
+                        for i, sent in enumerate(transcripts):
+                            modified_greedy_transcripts.append(sent)
+                            if sent == "":
+                                modified_greedy_transcripts.append(target_transcripts[i])
+                    else:
+                        modified_greedy_transcripts = transcripts
+                        
+                    ## get n-best transcripts
+                    nbest_transcripts = self.get_nbest_decoding_results(ctc_emissions, target_transcripts)
+                    nbest_transcripts = modified_greedy_transcripts + nbest_transcripts[:ctc_emissions.size(0)*(self.nbest-1)] if self.nbest > 1 else nbest_transcripts
+
+                    # print('============================================')
+                    # print('len(transcripts)',len(transcripts))
+                    # print('len(nbest_transcripts)',len(nbest_transcripts))
+                    # print()
+                    # # print('target',target)
+                    # print('target_tran',target_transcripts)
+                    # print()
+                    # print('transcripts',transcripts)
+                    # print()
+                    # print('nbest_trans',nbest_transcripts)
+                    # print()
+                    # print('============================================')
+
+                    # if ('WERE NOW AGAIN BROUGHT UPON THE STAGE' in transcripts) or ('' in transcripts):
+                    #     import pdb; pdb.set_trace()
+
+                    if self.nbest > 1:
+                        randomly_mask = True
+                        repeated_ctc_emissions = torch.zeros(ctc_emissions.size(0)*self.nbest,ctc_emissions.size(1),ctc_emissions.size(2)).to(self.device)
+                        repeated_w2v2_encoder_results = {
+                            'encoder_out' : torch.zeros(w2v2_encoder_results['encoder_out'].size(0),w2v2_encoder_results['encoder_out'].size(1)*self.nbest,w2v2_encoder_results['encoder_out'].size(2)).to(self.device), 
+                            'padding_mask' : torch.zeros(w2v2_encoder_results['padding_mask'].size(0)*self.nbest,w2v2_encoder_results['padding_mask'].size(1)).to(self.device) if w2v2_encoder_results['padding_mask'] is not None else None, 
+                            'layer_results' : None # Not used
+                            }
+                        repeated_cnn_outputs = {
+                            'x' : torch.zeros(cnn_outputs['x'].size(0)*self.nbest,cnn_outputs['x'].size(1),cnn_outputs['x'].size(2)).to(self.device), 
+                            'padding_mask' : torch.zeros(cnn_outputs['padding_mask'].size(0)*self.nbest,cnn_outputs['padding_mask'].size(1)).to(self.device) if cnn_outputs['padding_mask'] is not None else None
+                        }
+
+                        # import pdb; pdb.set_trace()
+
+                        for i in range(self.nbest):
+                            repeated_ctc_emissions[ctc_emissions.size(0)*i:ctc_emissions.size(0)*(i+1)] = ctc_emissions.clone()
+
+                            repeated_w2v2_encoder_results['encoder_out'][:,ctc_emissions.size(0)*i:ctc_emissions.size(0)*(i+1),:] = w2v2_encoder_results['encoder_out'].clone()
+                            if repeated_w2v2_encoder_results['padding_mask'] is not None:
+                                repeated_w2v2_encoder_results['padding_mask'][ctc_emissions.size(0)*i:ctc_emissions.size(0)*(i+1)] = w2v2_encoder_results['padding_mask'].clone()
+
+                            repeated_cnn_outputs['x'][ctc_emissions.size(0)*i:ctc_emissions.size(0)*(i+1)] = cnn_outputs['x'].clone()
+                            if repeated_cnn_outputs['padding_mask'] is not None:
+                                repeated_cnn_outputs['padding_mask'][ctc_emissions.size(0)*i:ctc_emissions.size(0)*(i+1)] = cnn_outputs['padding_mask'].clone()
+                    else : 
+                        randomly_mask = False
+                        repeated_ctc_emissions = ctc_emissions.clone()
+                        repeated_w2v2_encoder_results = {
+                            'encoder_out' : w2v2_encoder_results['encoder_out'].clone().to(self.device), 
+                            'padding_mask' : w2v2_encoder_results['padding_mask'].clone().to(self.device) if w2v2_encoder_results['padding_mask'] is not None else None, 
+                            'layer_results' : None # Not used
+                            }
+                        repeated_cnn_outputs = {
+                            'x' : cnn_outputs['x'].clone().to(self.device), 
+                            'padding_mask' : cnn_outputs['padding_mask'].clone().to(self.device) if cnn_outputs['padding_mask'] is not None else None
+                        }
+
+                    roberta_input, roberta_input_mask, roberta_input_length = self.encode_batch_sent_for_roberta(nbest_transcripts)
+
+                    # padding mask for roberta input
+                    mask_indices, _ = self.get_mask_indices_for_audio_and_text(repeated_ctc_emissions, nbest_transcripts, repeated_cnn_outputs['x'],randomly_mask=randomly_mask)
+                    nbest_target_padding_mask = torch.logical_not(roberta_input_mask).to(self.device)
+                    target_bos_marker=(roberta_input==self.roberta_src_dict.bos()).to(self.device)
+                    target_eos_marker=(roberta_input==self.roberta_src_dict.eos()).to(self.device)
+
+                    masked_roberta_input = self.apply_mask_for_text(nbest_transcripts, roberta_input, roberta_input_length, mask_indices)
+                    masked_roberta_input = masked_roberta_input.masked_fill(nbest_target_padding_mask,self.roberta_src_dict.pad())
+                    masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
+
+                    # merge masked gold transcript and nbest transcripts from n-gram decoding
+                    if masked_target.size(1) == masked_roberta_input.size(1):
+                        new_masked_roberta_input = torch.cat((masked_target,masked_roberta_input),0).to(self.device)
+                        new_nbest_target_padding_mask = torch.cat((target_padding_mask,nbest_target_padding_mask),0).to(self.device)
+
+                    elif masked_target.size(1) < masked_roberta_input.size(1):
+                        tmp_pad_col = torch.ones(masked_target.size(0),masked_roberta_input.size(1)-masked_target.size(1)).long().to(self.device)
+                        extended_masked_target = torch.cat((masked_target,tmp_pad_col),1).to(self.device)
+
+                        tmp_mask_true_col = torch.ones(target_padding_mask.size(0),nbest_target_padding_mask.size(1)-target_padding_mask.size(1)).bool().to(self.device)
+                        extended_target_padding_mask = torch.cat((target_padding_mask,tmp_mask_true_col),1).to(self.device)
+
+                        new_masked_roberta_input = torch.cat((extended_masked_target,masked_roberta_input),0).to(self.device)
+                        new_nbest_target_padding_mask = torch.cat((extended_target_padding_mask,nbest_target_padding_mask),0).to(self.device)
+
+                    elif masked_target.size(1) > masked_roberta_input.size(1):
+                        tmp_pad_col = torch.ones(masked_roberta_input.size(0),masked_target.size(1)-masked_roberta_input.size(1)).long().to(self.device)
+                        extended_masked_target = torch.cat((masked_roberta_input,tmp_pad_col),1).to(self.device)
+
+                        tmp_mask_true_col = torch.ones(nbest_target_padding_mask.size(0),target_padding_mask.size(1)-nbest_target_padding_mask.size(1)).bool().to(self.device)
+                        extended_target_padding_mask = torch.cat((nbest_target_padding_mask,tmp_mask_true_col),1).to(self.device)
+
+                        new_masked_roberta_input = torch.cat((masked_target, extended_masked_target),0).to(self.device)
+                        new_nbest_target_padding_mask = torch.cat((target_padding_mask, extended_target_padding_mask),0).to(self.device)
+
+                    new_repeated_w2v2_encoder_results = {
+                        'encoder_out': torch.cat((w2v2_encoder_results['encoder_out'],repeated_w2v2_encoder_results['encoder_out']),1).to(self.device),
+                        'padding_mask': torch.cat((w2v2_encoder_results['padding_mask'],repeated_w2v2_encoder_results['padding_mask']),0).to(self.device) if w2v2_encoder_results['padding_mask'] is not None else None,
+                        'layer_results': None
+                    }
+
+                    # target.size() ; masked_roberta_input.size() ; target_padding_mask.size(); nbest_target_padding_mask.size(); 
+                    # new_masked_roberta_input.size() ; new_nbest_target_padding_mask.size(); new_repeated_w2v2_encoder_results['encoder_out'].size() 
+
+                    nbest_target_padding_mask = new_nbest_target_padding_mask
+                    masked_roberta_input = new_masked_roberta_input
+                    repeated_w2v2_encoder_results = new_repeated_w2v2_encoder_results
+
+                    roberta_output = self.text_encoder(masked_roberta_input, features_only=True)[0]
+                    out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = repeated_w2v2_encoder_results, decoder_input_mask=nbest_target_padding_mask, full_context_alignment=True, features_only=True)
+
+                    decoder_out_from_nbest_list = self.decoder.output_layer(out) # torch.Size([40, 48, 50264]) -> gold scripts + nbest transcripts
+                    decoder_out = decoder_out_from_nbest_list[:target.size(0)]
+                else:
+                    roberta_output = self.text_encoder(masked_target, features_only=True)[0]
+                    out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=target_padding_mask, full_context_alignment=True, features_only=True)
+                    decoder_out = self.decoder.output_layer(out)
+
+                target_for_mlm = target.masked_fill(masked_target.ne(self.roberta_mask_idx),self.roberta_src_dict.pad()).masked_fill(target_padding_mask,self.roberta_src_dict.pad())
+                # import pdb; pdb.set_trace()
+
+                # for ctc loss
+                # former_out = out[:,:,self.cfg.decoder_output_dim//2:]
+                # later_out = out[:,:,:self.cfg.decoder_output_dim//2]
+                # former_out = self.proj_for_upsampling(self.proj_bottleneck(former_out))
+                # later_out = self.proj_for_upsampling(self.proj_bottleneck(later_out))
+
+                projected_out = self.proj_bottleneck(out)
+                former_out = projected_out[:,:,projected_out.size(-1)//2:]
+                later_out = projected_out[:,:,:projected_out.size(-1)//2]
+                # former_out = self.proj_for_upsampling(former_out)
+                # later_out = self.proj_for_upsampling(later_out)
+
+                tmp = torch.zeros(former_out.size(0),former_out.size(1)*2,former_out.size(2)).to(self.device)
+                tmp_even = list(range(0,former_out.size(1)*2,2))
+                tmp_odd = list(range(1,former_out.size(1)*2,2))
+
+                tmp_mask = torch.zeros(former_out.size(0),former_out.size(1)*2,dtype=torch.bool).to(self.device)
                 
-                # import pdb; pdb.set_trace()
-                # print(target_len)
-                # print(masked_target.eq(self.roberta_mask_idx).sum(-1))
-                # print((torch.FloatTensor(target.size()).uniform_() > torch.rand(1).item()).eq(1).sum(-1))
+                for i in range(former_out.size(0)):
+                    tmp[i][tmp_even] = former_out[i]
+                    tmp[i][tmp_odd] = later_out[i]
+                    tmp_mask[i][tmp_even] = nbest_target_padding_mask[i] if nbest_target_padding_mask is not None else target_padding_mask[i] 
+                    tmp_mask[i][tmp_odd] = nbest_target_padding_mask[i] if nbest_target_padding_mask is not None else target_padding_mask[i] 
 
-                roberta_output = self.text_encoder(masked_target, features_only=True)[0]
-                decoder_out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=target_padding_mask)
-                # import pdb; pdb.set_trace()
+                tmp_out = self.transformer_encoder_block_for_upsampling(tmp, encoder_padding_mask=tmp_mask.transpose(0,1))
+                upsampled_decoder_out = self.proj_for_upsampling(tmp_out)
+                upsampled_padding_mask = tmp_mask
 
-                # # get n-best transcripts
-                # transcripts = self.get_greedy_decoding_results(ctc_emissions)
-                # nbest_transcripts = self.get_nbest_decoding_results(ctc_emissions)
-                # import pdb; pdb.set_trace()
-                # roberta_input, roberta_input_mask, roberta_input_length = self.encode_batch_sent_for_roberta(transcripts)
-
-                # # padding mask for roberta input
-                # mask_indices, _ = self.get_mask_indices_for_audio_and_text(ctc_emissions, transcripts, cnn_outputs['x'])
-                # target_padding_mask = torch.logical_not(roberta_input_mask).to(self.device)
-                # target_bos_marker=(roberta_input==self.roberta_src_dict.bos()).to(self.device)
-                # target_eos_marker=(roberta_input==self.roberta_src_dict.eos()).to(self.device)
-
-                # masked_roberta_input = self.apply_mask_for_text(transcripts, roberta_input, roberta_input_length, mask_indices)
-                # masked_roberta_input = masked_roberta_input.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
-                # masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
-
-                # roberta_output = self.text_encoder(masked_roberta_input, features_only=True)[0]
-                # decoder_out_for_mwer, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=torch.logical_not(roberta_input_mask).to(self.device))
+                
             else:
                 # get ctc output and make bpe roberta sentence
                 transcripts = self.get_greedy_decoding_results(ctc_emissions)
@@ -877,38 +1135,171 @@ class Data2VecAudioTextModel(BaseFairseqModel):
                 target_bos_marker=(roberta_input==self.roberta_src_dict.bos()).to(self.device)
                 target_eos_marker=(roberta_input==self.roberta_src_dict.eos()).to(self.device)
 
-                # import pdb; pdb.set_trace()
-
                 masked_roberta_input = self.apply_mask_for_text(transcripts, roberta_input, roberta_input_length, mask_indices)
                 masked_roberta_input = masked_roberta_input.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
                 masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
 
+                mask_idx = masked_roberta_input.eq(self.roberta_mask_idx)
+                batch_num_mask = mask_idx.sum(-1)
+                num_mask = torch.max(batch_num_mask).item()
+                num_iter_ = 10
+                num_iter = num_mask if num_mask > num_iter_ else num_iter_
+                logger.info("| ! The number of iteration is {}".format(num_iter))
+
+                logger.info("| first step, The number of tokens is {}".format((masked_roberta_input.ne(self.roberta_src_dict.pad()).sum(-1)).tolist()))
+                logger.info("| first step, The number of masked tokens is {}".format((masked_roberta_input.eq(self.roberta_mask_idx).sum(-1)).tolist()))
+                logger.info("| decoding...")
+
+                roberta_output = self.text_encoder(masked_roberta_input, features_only=True)[0]
+                out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=target_padding_mask, full_context_alignment=True, features_only=True)
+                decoder_out = self.decoder.output_layer(out)
+
+                # for ctc loss
+                # former_out = out[:,:,self.cfg.decoder_output_dim//2:]
+                # later_out = out[:,:,:self.cfg.decoder_output_dim//2]
+                # former_out = self.proj_for_upsampling(self.proj_bottleneck(former_out))
+                # later_out = self.proj_for_upsampling(self.proj_bottleneck(later_out))
+
+                projected_out = self.proj_bottleneck(out)
+                former_out = projected_out[:,:,projected_out.size(-1)//2:]
+                later_out = projected_out[:,:,:projected_out.size(-1)//2]
+                # former_out = self.proj_for_upsampling(former_out)
+                # later_out = self.proj_for_upsampling(later_out)
+
+                tmp = torch.zeros(former_out.size(0),former_out.size(1)*2,former_out.size(2)).to(self.device)
+                tmp_even = list(range(0,former_out.size(1)*2,2))
+                tmp_odd = list(range(1,former_out.size(1)*2,2))
+
+                tmp_mask = torch.zeros(former_out.size(0),former_out.size(1)*2,dtype=torch.bool).to(self.device)
+                
+                for i in range(former_out.size(0)):
+                    tmp[i][tmp_even] = former_out[i]
+                    tmp[i][tmp_odd] = later_out[i]
+                    tmp_mask[i][tmp_even] = nbest_target_padding_mask[i] if nbest_target_padding_mask is not None else target_padding_mask[i] 
+                    tmp_mask[i][tmp_odd] = nbest_target_padding_mask[i] if nbest_target_padding_mask is not None else target_padding_mask[i] 
+
+                tmp_out = self.transformer_encoder_block_for_upsampling(tmp, encoder_padding_mask=tmp_mask.transpose(0,1))
+                upsampled_decoder_out = self.proj_for_upsampling(tmp_out)
+                upsampled_padding_mask = tmp_mask
+                
+                # get tokens and their probability
+                prob, pred=F.softmax(decoder_out,dim=-1).max(dim=-1)
+                # remove repeated tokens
+                new_prob, new_pred, new_padding_mask, new_mask_idx, new_target_eos_marker = self.post_process_roberta_output(prob, pred, target_padding_mask, mask_idx, target_eos_marker)
+                prob = new_prob
+                pred = new_pred
+                target_padding_mask = new_padding_mask
+                # mask_idx = new_mask_idx
+                target_eos_marker = new_target_eos_marker
+
+                # import pdb; pdb.set_trace()
+
+                # prob[0]>(prob.sum(-1)/(~target_padding_mask).sum(-1))[0]
+                # confident_idx = prob > 0.8
+                confident_idx = prob > 0.85
+                # confident_idx = prob > 0.9
+
+                mask_idx = torch.logical_not(confident_idx)
+                mask_idx = mask_idx.masked_fill(target_padding_mask, False)
+
+                pred = pred.masked_fill(torch.logical_not(confident_idx),self.roberta_mask_idx).to(self.device)
+                masked_roberta_input = pred.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
+                masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos())
+
                 # import pdb; pdb.set_trace()
 
                 batch_num_mask = masked_roberta_input.eq(self.roberta_mask_idx).sum(-1)
-                num_mask = torch.max(batch_num_mask).item()
-                num_iter_ = 10
+                num_mask_after_one_refinement = torch.max(batch_num_mask).item()
+                # num_iter = num_mask_after_one_refinement if num_mask_after_one_refinement < num_iter else num_iter
+                num_iter = num_mask_after_one_refinement
+                logger.info("| ! The number of iteration after one step refinement will be {}".format(num_iter))
+                logger.info("| first step, After removing repeated tokens, current num tokens is {}".format((pred.ne(self.roberta_src_dict.pad()).sum(-1).tolist())))
+                logger.info("| first step, average prob of decoder outs is {} \n".format((prob.masked_fill(target_padding_mask,0).sum()/torch.sum(roberta_input_length)).tolist()))
+                logger.info("")
 
-                num_iter = num_mask if num_mask > num_iter_ else num_iter_
-                logger.info("| ! The number of iteration is {} (according to the number of mask tokens)".format(num_iter))
+
+                # for i in range(10):
                 for i in range(num_iter):
+
+                    logger.info("| {}th step, The number of masked tokens is {}".format(i+1, (masked_roberta_input.eq(self.roberta_mask_idx).sum(-1)).tolist()))
+                    logger.info("| decoding...")
+
                     roberta_output = self.text_encoder(masked_roberta_input, features_only=True)[0]
-                    decoder_out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=torch.logical_not(roberta_input_mask).to(self.device))
-                    prob, pred=F.softmax(decoder_out,dim=-1).max(dim=-1)
-                    logger.info("| {} th, The number of tokens is {}".format(i, roberta_input_length.tolist()))
-                    logger.info("| {} th, The number of masked tokens is {}".format(i, (masked_roberta_input.eq(self.roberta_mask_idx).sum(-1)).tolist()))
-                    logger.info("| {} th, average prob of decoder outs are {} \n".format(i, prob.masked_fill(target_padding_mask,0).sum()/torch.sum(roberta_input_length)))
+                    out, _ = self.decoder(prev_output_tokens = roberta_output, encoder_out = w2v2_encoder_results, decoder_input_mask=torch.logical_not(roberta_input_mask).to(self.device), full_context_alignment=True, features_only=True)
+                    decoder_out = self.decoder.output_layer(out)
+                    prob, pred=F.softmax(decoder_out,dim=-1).max(dim=-1) 
+
+                    # remove repeated tokens
+                    new_prob, new_pred, new_padding_mask, new_mask_idx, new_target_eos_marker = self.post_process_roberta_output(prob, pred, target_padding_mask, mask_idx, target_eos_marker)
+                    prob = new_prob
+                    pred = new_pred
+                    target_padding_mask = new_padding_mask
+                    mask_idx = new_mask_idx
+                    mask_idx = mask_idx.masked_fill(target_padding_mask, False)
+                    target_eos_marker = new_target_eos_marker
+
+                    logger.info("| {}th step, After removing repeated tokens, current num tokens is {}".format(i+1, (pred.ne(self.roberta_src_dict.pad()).sum(-1)).tolist()))
+                    logger.info("| {}th step, average prob of decoder outs is {} \n".format(i+1, (prob.masked_fill(target_padding_mask,0).sum()/torch.sum(roberta_input_length).tolist())))
                     logger.info("")
 
                     if i==(num_iter-1):
                         break;
 
-                    # confident_idx = prob > 0.9
-                    confident_idx = prob > 0.85
+                    prob = prob.masked_fill(~mask_idx,0)
+                    cand = torch.topk(prob, 1, -1)[1].to(self.device)
+                    mask_idx = mask_idx.scatter(-1,cand,False)
 
-                    pred = pred.masked_fill(torch.logical_not(confident_idx),self.roberta_mask_idx).to(self.device)
+                    pred = pred.masked_fill(mask_idx, self.roberta_mask_idx).to(self.device)
                     masked_roberta_input = pred.masked_fill(target_padding_mask,self.roberta_src_dict.pad())
-                    masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos()) 
+                    masked_roberta_input = masked_roberta_input.masked_fill(target_bos_marker,self.roberta_src_dict.bos()).masked_fill(target_eos_marker,self.roberta_src_dict.eos())
+
+                    '''
+                    (Pdb) F.softmax(decoder_out,dim=-1).max(dim=-1)[1][0]; pred[0]
+                    tensor([    0,  9962,  4091,  4636,    61,    37,    56,  4460,    23,    10,
+                            741,  8285,  1506,    50,   247,  2418,    23,    10,   765,  4472,
+                            31,     5,   343,    95,    23,    99,    16,   122,   373,   385,
+                            19162,  2014,  1010,  4091,  9968,    19, 45322,     9,    39, 37147,
+                            1650,  4603, 10267,  3400,    14,  3566,    10,  5253,     7,   173,
+                            106,   385, 19162, 12941,    29,    14, 23715,  4884,   396,   668,
+                            31282,    14,   439,   137,     5,  8087,  9727,   740,  6368,    14,
+                            1224,   136,     5,  2508,     8,    97,  1593,  3475,  8541, 16936,
+                            5332,    14, 40788,     8,  7856,  9968,    70, 29308,   268,     4,
+                                0], device='cuda:0')
+                    tensor([50264,  9962,  4091,  4636,    61,    37,    56,  4460,    23,    10,
+                            741,  8285, 50264,    50,   247,  2418,    23,    10,   765,  4472,
+                            31,     5,   343,    95,    23,    99,    16,   122,   373,   385,
+                            19162, 50264,  1010,  4091,  9968,    19, 50264,     9,    39, 37147,
+                            50264,  4603, 50264, 50264,    14, 50264,    10,  5253,     7,   173,
+                            106, 50264, 19162, 12941,    29, 50264, 50264,  4884,   396,   668,
+                            50264,    14,   439,   137,     5,  8087, 50264,   740,  6368,    14,
+                            1224,   136,     5,  2508,     8,    97,  1593,  3475,  8541, 16936,
+                            50264,    14, 40788,     8, 50264,  9968,    70, 29308, 50264,     4,
+                            50264], device='cuda:0')
+
+                    (Pdb) F.softmax(upsampled_decoder_out,-1).max(-1)[1][0]
+                    tensor([    0,  9962, 50264, 50264,  4091, 50264,  4636, 50264,    61, 50264,
+                            37, 50264,    56, 50264,  4460, 50264,    23, 50264,    10, 50264,
+                            741, 50264,  8285, 50264,   219, 50264,    50, 50264,   247, 50264,
+                            2418, 50264,    23, 50264,    10, 50264,   765, 50264,  4472, 50264,
+                            31, 50264,     5, 50264,   343, 50264,    95,    95,    23, 50264,
+                            99, 50264,    16, 50264,   122,   122,   373, 50264,   385, 50264,
+                            19162, 50264,  2014, 50264,  1010,  1010,  4091, 50264,  9968, 50264,
+                            19, 50264, 45322, 50264,     9, 50264,    39, 50264, 37147, 50264,
+                            11354, 11354,  4603, 50264,  1236, 50264,  3400, 50264,    14, 50264,
+                            3566, 50264,    10, 50264,  5253, 50264,     7, 50264,   173, 50264,
+                            106, 50264,   385, 50264, 19162, 50264, 12941, 50264,    29, 50264,
+                            58, 50264, 23715, 50264,  4884, 50264,   396, 50264,   668, 50264,
+                            31282, 50264,    14, 50264,   439, 50264,   137, 50264,     5, 50264,
+                            8087,  8087,  1650, 50264,   740, 50264,  6368, 50264,    14, 50264,
+                            1224, 50264,   136, 50264,     5, 50264,  2508, 50264,     8, 50264,
+                            97, 50264,  1593,  1593,  3475, 50264,  8541, 50264, 16936, 50264,
+                            5332, 50264, 50264, 50264, 40788, 50264,     8, 50264,  7856, 50264,
+                            9968, 50264,    70, 50264, 29308, 50264,   268, 50264, 50264, 50264,
+                                4,     2], device='cuda:0')
+                    '''
+
+                    # import pdb; pdb.set_trace()
+
         else:
             ############################################################
             ###### for EMA training, we need to use masked inputs ######
@@ -974,7 +1365,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
                 torch.Size([23, 1, 768])
                 '''
 
-                import pdb; pdb.set_trace()
+                # import pdb; pdb.set_trace()
 
                 # y = decoder_out["fc_results"]
                 y = decoder_out[-1]['inner_states']
@@ -1055,7 +1446,7 @@ class Data2VecAudioTextModel(BaseFairseqModel):
             result["logs"] = other_logs
             return result
 
-        return decoder_out, transcripts, target_padding_mask
+        return decoder_out, transcripts, target_padding_mask, target_for_mlm, decoder_out_from_nbest_list, nbest_target_padding_mask, upsampled_decoder_out, upsampled_padding_mask
 
 
     @staticmethod
@@ -1105,6 +1496,9 @@ class Data2VecAudioTextModel(BaseFairseqModel):
         return output
 
     def lower_and_punc(self, sents):
+        # print('len(sents)',len(sents))
+        # print('sents',sents)
+        # print()
         return [ (sent[0].upper() + sent[1:].lower() + '.') for sent in sents]
 
     def encode_batch_sent_for_roberta(self, sents, *addl_sentences, no_separator=False):

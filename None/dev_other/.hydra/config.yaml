@@ -67,20 +67,22 @@ task:
   autoregressive: false
 decoding:
   _name: null
-  nbest: 1
-  unitlm: true
-  lmpath: /mnt/clova_speech/users/seosh/fairseq_lm/librispeech_12layer_transformer_xl_char_lm_model_bbs_bos/checkpoint_best.pt
-  lexicon: null
-  beam: 10
-  beamthreshold: 10.0
+  nbest: 8
+  unitlm: false
+  lmpath: /workspace/librispeech_model/decoder/4-gram.arpa
+  lexicon: /workspace/librispeech_model/librispeech_lexicon.lst
+  beam: 500
+  beamthreshold: 20.0
   beamsizetoken: 100
-  wordscore: -2.508438592326966
+  wordscore: 0.52
   unkweight: -.inf
-  silweight: -0.44677176421313547
-  lmweight: 0.2855569016533901
-  rescoring: false
-  rescoringweight: 2.0
-  type: fairseqlm
+  silweight: 0.0
+  lmweight: 1.74
+  rescoring: true
+  rescoringweight: 1.4925866910130725
+  rescoringwordlenweight: -5.0
+  rescoringlmpath: /workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
+  type: kenlm
   unique_wer_file: false
   results_path: null
 common:
@@ -110,7 +112,7 @@ common:
   amp_batch_retries: 2
   amp_init_scale: 128
   amp_scale_window: null
-  user_dir: /workspace/fairseq/examples/truncated_bptt
+  user_dir: null
   empty_cache_freq: 0
   all_gather_list_size: 16384
   model_parallel_size: 1
@@ -122,7 +124,7 @@ common:
   plasma_path: /tmp/plasma
 common_eval:
   _name: null
-  path: /workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
+  path: /workspace/librispeech_model/am/w2v2/wav2vec_small_960h.pt
   post_process: letter
   quiet: true
   model_overrides: '{}'
@@ -159,7 +161,7 @@ checkpoint:
 distributed_training:
   _name: null
   distributed_world_size: 1
-  distributed_num_procs: 4
+  distributed_num_procs: 1
   distributed_rank: 0
   distributed_backend: nccl
   distributed_init_method: null
@@ -178,7 +180,7 @@ distributed_training:
   slowmo_momentum: null
   slowmo_base_algorithm: localsgd
   localsgd_frequency: 3
-  nprocs_per_node: 4
+  nprocs_per_node: 1
   pipeline_model_parallel: false
   pipeline_balance: null
   pipeline_devices: null
@@ -202,7 +204,7 @@ dataset:
   num_workers: 1
   skip_invalid_size_inputs_valid_test: false
   max_tokens: 3000000
-  batch_size: 32
+  batch_size: 1
   required_batch_size_multiple: 8
   required_seq_len_multiple: 1
   dataset_impl: null

@@ -37,8 +37,7 @@ def add_asr_eval_argument(parser):
     parser.add_argument(
         "--rnnt_decoding_type",
         default="greedy",
-        help="wfstlm on dictonary\
-output units",
+        help="wfstlm on dictonaryoutput units",
     )
 
     try:
@@ -72,7 +71,9 @@ output units",
     parser.add_argument("--unk-weight", type=float, default=-math.inf)
     parser.add_argument("--sil-weight", type=float, default=0.0)
     parser.add_argument("--rescoring", action="store_true")
-    parser.add_argument("--rescoring_weight", type=float, default=-1)
+    parser.add_argument("--rescoring-model", help="lm model for rescoring")
+    parser.add_argument("--rescoring-weight", type=float, default=1.0)
+    parser.add_argument("--rescoring-word-len-weight", type=float, default=1.0)
     parser.add_argument("--spelling_correction", action="store_true")
     parser.add_argument("--hparam_search", action="store_true")
 
@@ -323,6 +324,80 @@ class ExistingEmissionsDecoder(object):
         return self.decoder.decode(emissions)
 
 
+########################################################################
+###################       for rescoring model        ###################
+########################################################################
+
+import numpy
+from fairseq.data import Dictionary
+from fairseq.models.fconv_lm import FConvLanguageModel
+from fairseq.models.transformer_lm import TransformerLanguageModel
+
+def load_rescoring_model(lm_path, model_type, dict_path):
+    path, checkpoint = os.path.split(lm_path)
+    if model_type == "convlm":
+        model_handle = FConvLanguageModel.from_pretrained(
+            path, checkpoint, os.path.split(dict_path)[0]
+        )
+    elif model_type == "transformer":
+        model_handle = TransformerLanguageModel.from_pretrained(
+            path, checkpoint, os.path.split(dict_path)[0]
+        )
+    else:
+        raise Exception(
+            "Unsupported language model type: use 'convlm' or 'transformer' models"
+        )
+    model = model_handle.models[0].decoder.cuda()
+    model.eval()
+    # print(model)
+    return model
+
+
+def predict_batch_for_rescoring(sentences, model, fairseq_dict, max_len):
+    encoded_input = []
+    padded_input = []
+    ppls = []
+
+    total_loss = 0.0
+    nwords = 0
+    for sentence in sentences:
+        encoded_input.append([fairseq_dict.index(token) for token in sentence])
+        assert (
+            len(encoded_input[-1]) <= max_len
+        ), "Error in the input length, it should be less than max_len {}".format(
+            max_len
+        )
+        if len(encoded_input[-1]) < max_len:
+            padded_input.append(
+                [fairseq_dict.eos()]
+                + encoded_input[-1]
+                + [fairseq_dict.eos()] * (max_len - len(encoded_input[-1]))
+            )
+        else:
+            padded_input.append([fairseq_dict.eos()] + encoded_input[-1])
+    x = torch.LongTensor(padded_input).cuda()
+    with torch.no_grad():
+        y = model.forward(x)[0]
+        if model.adaptive_softmax is not None:
+            logprobs = (model.adaptive_softmax.get_log_prob(y, None).detach().cpu().numpy())
+        else:
+            logprobs = torch.nn.functional.log_softmax(y, 2).detach().cpu().numpy()
+
+    for index, input_i in enumerate(encoded_input):
+        loss = numpy.sum(logprobs[index, numpy.arange(len(input_i)), input_i])
+        loss += logprobs[index, len(input_i), fairseq_dict.eos()]
+        ppls.append(loss)
+
+        total_loss += loss
+        nwords += len(input_i) + 1
+    return ppls, total_loss, nwords
+
+
+########################################################################
+###################               main               ###################
+########################################################################
+
+
 def main(args, task=None, model_state=None):
     check_args(args)
 
@@ -375,19 +450,54 @@ def main(args, task=None, model_state=None):
             sentencepiece_model=sentencepiece_model
             ).eval().cuda()
 
+    rescoring_model = None
     if args.rescoring : 
         device = 'cuda'
-        model_name = "gpt2"
-        # model_name = "gpt2-large"
-        from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForCausalLM, AutoTokenizer
 
-        rescoring_model = (
-            AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, is_decoder=True)
-            .to(device)
-            .eval()
+        print(args.rescoring_model)
+
+        path, checkpoint = os.path.split(args.rescoring_model)
+
+        overrides = {
+            "task": 'language_modeling',
+            "data": path,
+        }
+        logger.info("| loading rescoring lm model from {}".format(args.rescoring_model))
+        rescoring_models, rescoring_saved_cfg, rescoring_task = checkpoint_utils.load_model_ensemble_and_task(
+            utils.split_paths(args.rescoring_model, separator="\\"),
+            arg_overrides=overrides,
+            strict=True,
         )
-        rescoring_tokenizer = AutoTokenizer.from_pretrained(model_name)
-        rescoring_tokenizer.pad_token = rescoring_tokenizer.eos_token
+
+        rescoring_model = rescoring_models[0]
+        rescoring_model.eval().cuda()
+        rescoring_model.make_generation_fast_()
+        if rescoring_saved_cfg.common.fp16:
+            rescoring_model.half()
+
+        dict_path = os.path.join(path,'dict.txt')
+        rescoring_dict = Dictionary.load(dict_path)
+
+        # import pdb; pdb.set_trace()
+
+        # path, checkpoint = os.path.split(args.rescoring_model)
+        # dict_path = os.path.join(path,'dict.txt')
+        # transformer_rescoring_dict = Dictionary.load(dict_path)
+        # model = load_rescoring_model(args.rescoring_model, 'transformer', dict_path)
+        # model.eval().cuda()
+
+
+        # model_name = "gpt2"
+        # # model_name = "gpt2-large"
+        # from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForCausalLM, AutoTokenizer
+
+        # gpt_rescoring_model = (
+        #     AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, is_decoder=True)
+        #     .to(device)
+        #     .eval()
+        # )
+        # gpt_rescoring_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # gpt_rescoring_tokenizer.pad_token = gpt_rescoring_tokenizer.eos_token
 
         # device = 'cuda'
         # model_name = "gpt2"
@@ -404,23 +514,6 @@ def main(args, task=None, model_state=None):
         # from transformers import RobertaTokenizer, RobertaModel, RobertaForMaskedLM
         # rescoring_model = RobertaForMaskedLM.from_pretrained(model_name).to(device).eval()
         # rescoring_tokenizer = RobertaTokenizer.from_pretrained(model_name)
-
-        # class cfg:
-        #     path = "former_xl_char_lm_model_bbs_bos]$ pwd/home1/irteam/users/seosh/decoder_pratice/training_shell_scripts/librispeech_12laye"
-        #     task = "language_modeling"
-        #     model_overrides = '{"mem_len":640,"clamp_len":400,"same_length":True}'
-
-        # # Load ensemble
-        # from fairseq import checkpoint_utils
-        # task = tasks.setup_task(cfg.task)
-        # models, model_args, task = checkpoint_utils.load_model_ensemble_and_task(
-        #     [cfg.path],
-        #     arg_overrides=eval(cfg.model_overrides),
-        #     task=task,
-        # )
-
-        # import pdb
-        # pdb.set_trace()
 
 
     # Set dictionary
@@ -443,6 +536,8 @@ def main(args, task=None, model_state=None):
 
     # Initialize generator
     gen_timer = StopwatchMeter()
+
+    gen_timer_for_rescoring = StopwatchMeter()
 
     def build_generator(args):
         w2l_decoder = getattr(args, "w2l_decoder", None)
@@ -506,17 +601,12 @@ def main(args, task=None, model_state=None):
         # 두 번째 배치부터 터지는데?
         for sample in t:
 
-            # import pdb
-            # pdb.set_trace()
-
             '''
             (Pdb) sample.keys()
             dict_keys(['id', 'net_input', 'target_lengths', 'ntokens', 'target'])
-
-            sample['net_input']['source'].size() # speech input 인듯                                                                                                          
+            sample['net_input']['source'].size() # speech input                                                                                                         
             torch.Size([7, 552160])
-
-            (Pdb) sample['target'].size() # sentence target 인듯
+            (Pdb) sample['target'].size() # sentence target
             torch.Size([7, 619])
             '''
 
@@ -556,113 +646,149 @@ def main(args, task=None, model_state=None):
             hypos = task.inference_step(generator, models, sample, prefix_tokens)
 
             ## generate -> get emission -> decode
-
-            '''
-            (Pdb) hypos[0][0].keys()
-            dict_keys(['tokens', 'score', 'timesteps', 'words'])
-
-            (Pdb) hypos[0][0]['words']
-            ['I', 'AM', 'WILLING', 'TO', 'ENTER', 'INTO', 'COMPETITION', 'WITH', 'THE', 'ANCIENTS', 
-            'AND', 'FEEL', 'ABLE', 'TO', 'SURPASS', 'THEM', 'FOR', 'SINCE', 'THOSE', 'EARLY', 'DAYS', 
-            'IN', 'WHICH', 'I', 'MADE', 'THE', 'METALS', 'OF', 'POPE', 'CLEMENT', 'I', 'HAVE', 'LEARNED', 
-            'SO', 'MUCH', 'THAT', 'I', 'CAN', 'NOW', 'PRODUCE', 'FAR', 'BETTER', 'PIECES', 'OF', 'THE', 'KIND', 
-            'I', 'THINK', 'I', 'CAN', 'ALSO', 'OUTDO', 'THE', 'COINS', 'I', 'STRUCK', 'FOR', 'DUKE', 'ALESSANDRO', 
-            'WHICH', 'ARE', 'STILL', 'HELD', 'IN', 'HIGH', 'ESTEEM', 'IN', 'LIKE', 'MANNER', 'I', 'COULD', 'MAKE', 
-            'FOR', 'YOU', 'LARGE', 'PIECES', 'OF', 'GOLD', 'AND', 'SILVER', 'PLATE', 'AS', 'I', 'DID', 'SO', 'OFTEN', 
-            'FOR', 'THAT', 'NOBLE', 'MONARCH', 'KING', 'FRANCIS', 'OF', 'FRANCE', 'THANKS', 'TO', 'THE', 'GREAT', 
-            'CONVENIENCES', 'HE', 'ALLOWED', 'ME', 'WITHOUT', 'EVER', 'LOSING', 'TIME', 'FOR', 'THE', 'EXECUTION', 
-            'OF', 'COLOSSAL', 'STATUES', 'OR', 'OTHER', 'WORKS', 'OF', 'THE', "SCULPTOR'S", 'CRAFT']
-            '''
-
             num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
 
             gen_timer.stop(num_generated_tokens)
 
-            '''
-            (Pdb) num_generated_tokens
-            622            
-            '''
 
-            '''
-            hypos 는 nested list인데
-            첫 번째는 speaker id를 의미하고
-            두 번째는 nbest개의 hypothesis를 의미한다.
-            '''
+            total_loss = 0.0
+            nwords = 0.0
+            batch = []
+            original_lines = []
+            max_len = 0
+
+            # (Pdb) len(hypos) # 1
+            # (Pdb) len(nbest_hypos) # 50
+
+            gen_timer_for_rescoring.start()
 
             if args.rescoring:
+                for i, nbest_hypos in enumerate(hypos):
+                    batch = []
+                    max_len = 0
+                    for j, n_th_hypo in enumerate(nbest_hypos):
 
-                reordered_hypos = []
+                        sent = n_th_hypo['words']
+                        score = n_th_hypo['score'] # am + lm + word_penalty
+                        hypos[i][j]['wl_len'] = len(sent) + len("".join(sent)) # word length + char length 
+                        sent = " ".join(sent).lower().split()
 
-                for nbest_hypos in hypos:
-                    inputs = []
-                    beams = []
-                    for hypo in nbest_hypos:
-                        inputs.append(' '.join(hypo['words']))
-                    encoded = rescoring_tokenizer(inputs, return_tensors='pt', padding=True, truncation=True)['input_ids'].to(rescoring_model.device)
-                    inputs_mask = (encoded != rescoring_tokenizer.pad_token_id)
+                        batch.append(sent)
 
-                    with torch.no_grad():
-                        output = rescoring_model(input_ids=encoded, attention_mask=inputs_mask)
-                        log_probs = torch.nn.functional.log_softmax(output.logits, dim=-1)
-                        target_log_probs = log_probs[:, :-1].gather(2, encoded[:, 1:].unsqueeze(2)).squeeze(2)
-                        neural_lm_score = torch.sum(target_log_probs * inputs_mask[:, 1:], dim=-1)
-                        rescored_results=(neural_lm_score)
+                    max_len = len(sorted(batch, key=lambda x: len(x))[-1])
+                    ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, rescoring_model.decoder, rescoring_dict, max_len) # -39, -40
 
-                    for hypo, rescored_result in zip(nbest_hypos, rescored_results):
-                        beams.append({
-                            "tokens":hypo['tokens'], 
-                            "score" : hypo['score'], 
-                            "timesteps" : hypo['timesteps'], 
-                            "words" : hypo['words'], 
-                            "rescoring" : rescored_result,
-                            # "total_score" : hypo['score'] + self.rescoring_weight * rescored_result
-                            })
+                    for j, (n_th_hypo, ppl) in enumerate(zip(nbest_hypos,ppls)):
+                        hypos[i][j]['rescoring_lm_ppl'] = ppl
+                        hypos[i][j]['total_score'] = n_th_hypo['am_score'] + args.rescoring_weight * ppl + args.rescoring_word_len_weight * n_th_hypo['wl_len']
 
-                    '''
-                    ## flashlight decoder score (am + lm beam search maybe?)
-                    (Pdb) torch.tensor([tmp['score'] for tmp in nbest_hypos])
-                    tensor([21031.2617, 21030.2500, 21026.6172, 21026.3652, 21025.8457, 21025.7324,
-                            21025.6055, 21025.4688])
+                    hypos[i] = sorted(nbest_hypos, key=lambda x: -x["total_score"])
+                    # hypos[i] = sorted(nbest_hypos, key=lambda x: -x["rescoring_lm_ppl"])
 
-                    ## log softmax sum
-                    (Pdb) rescored_results
-                    tensor([-711.9091, -710.1793, -716.3192, -712.5317, -713.6451, -716.3398,
-                            -714.7936, -702.9783], device='cuda:0')
+            num_generated_tokens_for_rescoring = sum(len(h[0]["tokens"]) for h in hypos)
+            gen_timer_for_rescoring.stop(num_generated_tokens_for_rescoring)
 
-                    ## logit sum
-                    (Pdb) neural_lm_score
-                    tensor([-20230.5352, -20261.6445, -20284.9336, -20233.1250, -20201.2852,
-                            -20069.5234, -20313.2480, -20026.4883], device='cuda:0')
+                #         import pdb; pdb.set_trace()
+                #         if (len(batch) + 1) * numpy.maximum(max_len, len(sent)) > args.max_tokens:
+                #             if len(batch) == 0 :
+                #                 batch.append(sent)
+                #                 max_len = len(sent)
+                #                 continue
 
-                    ## GPT 기준 best path
-                    (Pdb) inputs[-1] 
-                    "I AM WILLING TO ENTER INTO COMPETITION WITH THE ANCIENTS AND FEEL ABLE TO SURPASS THEM FOR SINCE THOSE EARLY DAYS IN 
-                    WHICH I MADE THE MEDALS OF POPE CLEMENT I HAVE LEARNED SO MUCH THAT I CAN NOW PRODUCE FAR BETTER PIECES OF THE KIND I THINK 
-                    I CAN ALSO OUTDO THE COINS I STRUCK FOR DUKE ALESSANDRO WHICH ARE STILL HELD IN HIGH ESTEEM IN LIKE MANNER I COULD MAKE FOR YOU 
-                    LARGE PIECES OF GOLD AND SILVER PLATE AS I DID SO OFTEN FOR THAT NOBLE MONARCH KING FRANCIS OF FRANCE THANKS TO THE GREAT CONVENIENCE 
-                    HE ALLOWED ME WITHOUT EVER LOSING TIME FOR THE EXECUTION OF COLOSSAL STATUES OR OTHER WORKS OF THE SCULPTOR'S CRAFT"
+                #             ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, rescoring_model.decoder, rescoring_dict, max_len)
+                #             # ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, model, rescoring_dict, max_len)
 
-                    # am 기준 best path
-                    (Pdb) inputs[0]
-                    "I AM WILLING TO ENTER INTO COMPETITION WITH THE ANCIENTS AND FEEL ABLE TO SURPASS THEM FOR SINCE THOSE EARLY DAYS IN 
-                    WHICH I MADE THE MEDALS OF POPE CLEMENT I HAVE LEARNED SO MUCH THAT I CAN NOW PRODUCE FAR BETTER PIECES OF THE KIND I THINK 
-                    I CAN ALSO OUTDO THE COINS I STRUCK FOR DUKE ALESSANDRO WHICH ARE STILL HELD IN HIGH ESTEEM IN LIKE MANNER I COULD MAKE FOR YOU 
-                    LARGE PIECES OF GOLD AND SILVER PLATE AS I DID SO OFTEN FOR THAT NOBLE MONARCH KING FRANCIS OF FRANCE THANKS TO THE GREAT CONVENIENCES 
-                    HE ALLOWED ME WITHOUT EVER LOSING TIME FOR THE EXECUTION OF COLOSSAL STATUES OR OTHER WORKS OF THE SCULPTOR'S CRAFT"
-                    '''
+                #             total_loss += loss_batch
+                #             nwords += nwords_batch
 
-                    # Original Rescoring log P_{AM} (y|x) + \alpha1 log P_{LM1}(y) + \beta |y| + \alpha2 log P_{LM2}(y)
+                #             batch = [sent]
+                #             max_len = len(sent)
+                #         else:
+                #             batch.append(sent)
+                #             max_len = numpy.maximum(max_len, len(sent))
 
-                    # on the fly
-                    sorted_beams = sorted(beams, reverse=True, key=lambda x:x['rescoring'])
-                    # sorted_beams = sorted(beams, reverse=False, key=lambda x:x['rescoring'])
+                #     import pdb; pdb.set_trace()
 
-                    import pdb
-                    pdb.set_trace()
+                # if len(batch) > 0:
+                #     ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, rescoring_model.decoder, rescoring_dict, max_len)
+                #     total_loss += loss_batch
+                #     nwords += nwords_batch
 
-                    reordered_hypos.append(sorted_beams)
 
-                hypos = reordered_hypos
+            # if args.rescoring:
+
+            #     reordered_hypos = []
+
+            #     for nbest_hypos in hypos:
+            #         inputs = []
+            #         beams = []
+            #         for hypo in nbest_hypos:
+            #             inputs.append(' '.join(hypo['words']))
+            #         encoded = rescoring_tokenizer(inputs, return_tensors='pt', padding=True, truncation=True)['input_ids'].to(rescoring_model.device)
+            #         inputs_mask = (encoded != rescoring_tokenizer.pad_token_id)
+
+            #         with torch.no_grad():
+            #             output = rescoring_model(input_ids=encoded, attention_mask=inputs_mask)
+            #             log_probs = torch.nn.functional.log_softmax(output.logits, dim=-1)
+            #             target_log_probs = log_probs[:, :-1].gather(2, encoded[:, 1:].unsqueeze(2)).squeeze(2)
+            #             neural_lm_score = torch.sum(target_log_probs * inputs_mask[:, 1:], dim=-1)
+            #             rescored_results=(neural_lm_score)
+
+            #         for hypo, rescored_result in zip(nbest_hypos, rescored_results):
+            #             beams.append({
+            #                 "tokens":hypo['tokens'], 
+            #                 "score" : hypo['score'], 
+            #                 "timesteps" : hypo['timesteps'], 
+            #                 "words" : hypo['words'], 
+            #                 "rescoring" : rescored_result,
+            #                 # "total_score" : hypo['score'] + self.rescoring_weight * rescored_result
+            #                 })
+
+            #         '''
+            #         ## flashlight decoder score (am + lm beam search maybe?)
+            #         (Pdb) torch.tensor([tmp['score'] for tmp in nbest_hypos])
+            #         tensor([21031.2617, 21030.2500, 21026.6172, 21026.3652, 21025.8457, 21025.7324,
+            #                 21025.6055, 21025.4688])
+
+            #         ## log softmax sum
+            #         (Pdb) rescored_results
+            #         tensor([-711.9091, -710.1793, -716.3192, -712.5317, -713.6451, -716.3398,
+            #                 -714.7936, -702.9783], device='cuda:0') # 
+
+            #         ## logit sum
+            #         (Pdb) neural_lm_score
+            #         tensor([-20230.5352, -20261.6445, -20284.9336, -20233.1250, -20201.2852,
+            #                 -20069.5234, -20313.2480, -20026.4883], device='cuda:0')
+
+            #         ## GPT 기준 best path
+            #         (Pdb) inputs[-1] 
+            #         "I AM WILLING TO ENTER INTO COMPETITION WITH THE ANCIENTS AND FEEL ABLE TO SURPASS THEM FOR SINCE THOSE EARLY DAYS IN 
+            #         WHICH I MADE THE MEDALS OF POPE CLEMENT I HAVE LEARNED SO MUCH THAT I CAN NOW PRODUCE FAR BETTER PIECES OF THE KIND I THINK 
+            #         I CAN ALSO OUTDO THE COINS I STRUCK FOR DUKE ALESSANDRO WHICH ARE STILL HELD IN HIGH ESTEEM IN LIKE MANNER I COULD MAKE FOR YOU 
+            #         LARGE PIECES OF GOLD AND SILVER PLATE AS I DID SO OFTEN FOR THAT NOBLE MONARCH KING FRANCIS OF FRANCE THANKS TO THE GREAT CONVENIENCE 
+            #         HE ALLOWED ME WITHOUT EVER LOSING TIME FOR THE EXECUTION OF COLOSSAL STATUES OR OTHER WORKS OF THE SCULPTOR'S CRAFT"
+
+            #         # am 기준 best path
+            #         (Pdb) inputs[0]
+            #         "I AM WILLING TO ENTER INTO COMPETITION WITH THE ANCIENTS AND FEEL ABLE TO SURPASS THEM FOR SINCE THOSE EARLY DAYS IN 
+            #         WHICH I MADE THE MEDALS OF POPE CLEMENT I HAVE LEARNED SO MUCH THAT I CAN NOW PRODUCE FAR BETTER PIECES OF THE KIND I THINK 
+            #         I CAN ALSO OUTDO THE COINS I STRUCK FOR DUKE ALESSANDRO WHICH ARE STILL HELD IN HIGH ESTEEM IN LIKE MANNER I COULD MAKE FOR YOU 
+            #         LARGE PIECES OF GOLD AND SILVER PLATE AS I DID SO OFTEN FOR THAT NOBLE MONARCH KING FRANCIS OF FRANCE THANKS TO THE GREAT CONVENIENCES 
+            #         HE ALLOWED ME WITHOUT EVER LOSING TIME FOR THE EXECUTION OF COLOSSAL STATUES OR OTHER WORKS OF THE SCULPTOR'S CRAFT"
+            #         '''
+
+            #         # Original Rescoring log P_{AM} (y|x) + \alpha1 log P_{LM1}(y) + \beta |y| + \alpha2 log P_{LM2}(y)
+
+            #         # on the fly
+            #         sorted_beams = sorted(beams, reverse=True, key=lambda x:x['rescoring'])
+            #         # sorted_beams = sorted(beams, reverse=False, key=lambda x:x['rescoring'])
+
+            #         import pdb
+            #         pdb.set_trace()
+
+            #         reordered_hypos.append(sorted_beams)
+
+            #     hypos = reordered_hypos
 
             for i, sample_id in enumerate(sample["id"].tolist()):
                 '''
@@ -735,44 +861,13 @@ def main(args, task=None, model_state=None):
                 best_possible_errs_t += best_possible_errs 
                 best_possible_lengths_t += best_possible_length
 
-            # import pdb
-            # pdb.set_trace()
-
-            '''
-            nbest = 1
-            (Pdb) " ".join(hypos[0][0]["words"]).split()
-            ['I', 'AM', 'WILLING', 'TO', 'ENTER', 'INTO', 'COMPETITION', 'WITH', 'THE', 'ANCIENTS', 'AND', 'FEEL', 'ABLE', 'TO', 'SURPASS', 'THEM', 'FOR', 
-            'SINCE', 'THOSE', 'EARLY', 'DAYS', 'IN', 'WHICH', 'I', 'MADE', 'THE', 'METALS', 'OF', 'POPE', 'CLEMENT', 'I', 'HAVE', 'LEARNED', 'SO', 'MUCH', 'THAT', 
-            'I', 'CAN', 'NOW', 'PRODUCE', 'FAR', 'BETTER', 'PIECES', 'OF', 'THE', 'KIND', 'I', 'THINK', 'I', 'CAN', 'ALSO', 'OUTDO', 'THE', 'COINS', 'I', 'STRUCK', 
-            'FOR', 'DUKE', 'ALESSANDRO', 'WHICH', 'ARE', 'STILL', 'HELD', 'IN', 'HIGH', 'ESTEEM', 'IN', 'LIKE', 'MANNER', 'I', 'COULD', 'MAKE', 'FOR', 'YOU', 
-            'LARGE', 'PIECES', 'OF', 'GOLD', 'AND', 'SILVER', 'PLATE', 'AS', 'I', 'DID', 'SO', 'OFTEN', 'FOR', 'THAT', 'NOBLE', 'MONARCH', 'KING', 'FRANCIS', 
-            'OF', 'FRANCE', 'THANKS', 'TO', 'THE', 'GREAT', 'CONVENIENCES', 'HE', 'ALLOWED', 'ME', 'WITHOUT', 'EVER', 'LOSING', 'TIME', 'FOR', 'THE', 'EXECUTION', 
-            'OF', 'COLOSSAL', 'STATUES', 'OR', 'OTHER', 'WORKS', 'OF', 'THE', "SCULPTOR'S", 'CRAFT']
-
-            (Pdb) post_process(tgt_dict.string(target_tokens),args.post_process).split()
-            ['I', 'AM', 'WILLING', 'TO', 'ENTER', 'INTO', 'COMPETITION', 'WITH', 'THE', 'ANCIENTS', 'AND', 'FEEL', 'ABLE', 'TO', 'SURPASS', 'THEM', 'FOR', 
-            'SINCE', 'THOSE', 'EARLY', 'DAYS', 'IN', 'WHICH', 'I', 'MADE', 'THE', 'MEDALS', 'OF', 'POPE', 'CLEMENT', 'I', 'HAVE', 'LEARNED', 'SO', 'MUCH', 'THAT', 
-            'I', 'CAN', 'NOW', 'PRODUCE', 'FAR', 'BETTER', 'PIECES', 'OF', 'THE', 'KIND', 'I', 'THINK', 'I', 'CAN', 'ALSO', 'OUTDO', 'THE', 'COINS', 'I', 'STRUCK', 
-            'FOR', 'DUKE', 'ALESSANDRO', 'WHICH', 'ARE', 'STILL', 'HELD', 'IN', 'HIGH', 'ESTEEM', 'IN', 'LIKE', 'MANNER', 'I', 'COULD', 'MAKE', 'FOR', 'YOU', 
-            'LARGE', 'PIECES', 'OF', 'GOLD', 'AND', 'SILVER', 'PLATE', 'AS', 'I', 'DID', 'SO', 'OFTEN', 'FOR', 'THAT', 'NOBLE', 'MONARCH', 'KING', 'FRANCIS', 
-            'OF', 'FRANCE', 'THANKS', 'TO', 'THE', 'GREAT', 'CONVENIENCES', 'HE', 'ALLOWED', 'ME', 'WITHOUT', 'EVER', 'LOSING', 'TIME', 'FOR', 'THE', 'EXECUTION', 
-            'OF', 'COLOSSAL', 'STATUES', 'OR', 'OTHER', 'WORKS', 'OF', 'THE', 'SCULPTORS', 'CRAFT']
-            '''
 
             wps_meter.update(num_generated_tokens)
             t.log({"wps": round(wps_meter.avg)})
             num_sentences += (
                 sample["nsentences"] if "nsentences" in sample else sample["id"].numel()
             )
-            '''
-            (Pdb) num_generated_tokens
-            622
-            (Pdb) wps_meter.avg
-            1.1986295499371433
-            '''
 
-    # import pdb
-    # pdb.set_trace()
 
     wer = None
     best_possible_wer = None
@@ -815,6 +910,8 @@ def main(args, task=None, model_state=None):
         )
         logger.info("| {} for extracting ctc emission".format(generator.get_emission_time))
         logger.info("| {} for actual decoding time (viterbi, ngram so on)".format(generator.decoding_time))
+        if args.rescoring:
+            logger.info("| {} for rescoring with {}-best lists".format(gen_timer_for_rescoring.sum ,args.nbest))
         logger.info("| Generate {} with beam={}".format(args.gen_subset, args.beam))
 
     # return task, wer

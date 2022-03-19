@@ -93,6 +93,111 @@ def reset_logging():
     root.addHandler(handler)
 
 
+
+########################################################################
+###################       for rescoring model        ###################
+########################################################################
+
+import numpy
+from fairseq.data import Dictionary
+from fairseq.models.fconv_lm import FConvLanguageModel
+from fairseq.models.transformer_lm import TransformerLanguageModel
+
+def load_rescoring_model(lm_path, model_type, dict_path):
+    path, checkpoint = os.path.split(lm_path)
+    if model_type == "convlm":
+        model_handle = FConvLanguageModel.from_pretrained(
+            path, checkpoint, os.path.split(dict_path)[0]
+        )
+    elif model_type == "transformer":
+        model_handle = TransformerLanguageModel.from_pretrained(
+            path, checkpoint, os.path.split(dict_path)[0]
+        )
+    else:
+        raise Exception(
+            "Unsupported language model type: use 'convlm' or 'transformer' models"
+        )
+    model = model_handle.models[0].decoder.cuda()
+    model.eval()
+    # print(model)
+    return model
+
+
+def predict_batch_for_rescoring(sentences, model, fairseq_dict, max_len):
+    encoded_input = []
+    padded_input = []
+    ppls = []
+
+    total_loss = 0.0
+    nwords = 0
+
+    # batchify
+    for sentence in sentences:
+        encoded_input.append([fairseq_dict.index(token) for token in sentence])
+        assert (
+            len(encoded_input[-1]) <= max_len
+        ), "Error in the input length, it should be less than max_len {}".format(
+            max_len
+        )
+        if len(encoded_input[-1]) < max_len:
+            padded_input.append(
+                [fairseq_dict.eos()]
+                + encoded_input[-1]
+                + [fairseq_dict.eos()] * (max_len - len(encoded_input[-1]))
+            )
+        else:
+            padded_input.append([fairseq_dict.eos()] + encoded_input[-1])
+    x = torch.LongTensor(padded_input).cuda()
+
+    # inference
+    with torch.no_grad():
+        y = model.forward(x)[0]
+        if model.adaptive_softmax is not None:
+            logprobs = (model.adaptive_softmax.get_log_prob(y, None).detach().cpu().numpy())
+        else:
+            logprobs = torch.nn.functional.log_softmax(y, 2).detach().cpu().numpy()
+
+    '''
+    (Pdb) sentences[0]
+    ['i', 'am', 'willing', 'to', 'enter', 'into', 'competition', 'with', 'the', 'ancients', 'and', 
+    'feel', 'able', 'to', 'surpass', 'them', 'for', 'since', 'those', 'early', 'days', 'in', 
+    'which', 'i', 'made', 'the', 'medals', 'of', 'pope', 'clement', 'i', 'have', 'learned', 
+    'so', 'much', 'that', 'i', 'can', 'now', 'produce', 'far', 'better', 'pieces', 'of', 
+    'the', 'kind', 'i', 'think', 'i', 'can', 'also', 'outdo', 'the', 'coins', 'i', 'struck', 
+    'for', 'duke', 'alessandro', 'which', 'are', 'still', 'held', 'in', 'high', 'esteem', 
+    'in', 'like', 'manner', 'i', 'could', 'make', 'for', 'you', 'large', 'pieces', 'of', 
+    'gold', 'and', 'silver', 'plate', 'as', 'i', 'did', 'so', 'often', 'for', 'that', 'noble', 
+    'monarch', 'king', 'francis', 'of', 'france', 'thanks', 'to', 'the', 'great', 'conveniences', 
+    'he', 'allowed', 'me', 'without', 'ever', 'losing', 'time', 'for', 'the', 'execution', 'of', 
+    'colossal', 'statues', 'or', 'other', 'works', 'of', 'the', "sculptor's", 'craft']
+
+    (Pdb) x[0]
+    tensor([    2,    10,   134,  1376,     7,  1106,    64,  7431,    16,     4,
+            10432,     5,   356,   433,     7, 15349,    53,    19,   264,   130,
+            519,   233,     9,    34,    10,    93,     4, 16706,     6,  3404,
+            9543,    10,    29,   765,    41,   105,    12,    10,    91,    65,
+            2204,   194,   209,  1380,     6,     4,   292,    10,   124,    10,
+            91,   226, 30331,     4,  8978,    10,   642,    19,  1299, 19243,
+            34,    47,   140,   361,     9,   300,  4266,     9,    73,   430,
+            10,    62,   129,    19,    17,   325,  1380,     6,   590,     5,
+            1027,  2565,    18,    10,    79,    41,   336,    19,    12,   930,
+            5009,   321,  3275,     6,   903,  1804,     7,     4,    99, 18188,
+            11,   933,    40,   141,   161,  3092,    71,    19,     4,  3615,
+                6,  8886,  6828,    46,    88,  1199,     6,     4, 32003,  2603,
+                2], device='cuda:0')
+    '''
+
+    for index, input_i in enumerate(encoded_input):
+        loss = numpy.sum(logprobs[index, numpy.arange(len(input_i)), input_i])
+        loss += logprobs[index, len(input_i), fairseq_dict.eos()]
+        # import pdb; pdb.set_trace()
+        ppls.append(loss)
+
+        total_loss += loss
+        nwords += len(input_i) + 1
+    return ppls, total_loss, nwords
+
+
 class InferenceProcessor:
     cfg: InferConfig
 
@@ -127,19 +232,69 @@ class InferenceProcessor:
 
         self.rescoring = cfg.decoding.rescoring
         self.rescoring_weight = cfg.decoding.rescoringweight
+        self.rescoring_word_len_weight = cfg.decoding.rescoringwordlenweight
 
-        if self.rescoring:
-            device = 'cuda'
-            model_name = "gpt2"
-            # model_name = "gpt2-large"
-            from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForCausalLM, AutoTokenizer
-            self.rescoring_model = (
-                AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, is_decoder=True)
-                .to(device)
-                .eval()
-            )
-            self.rescoring_tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.rescoring_tokenizer.pad_token = self.rescoring_tokenizer.eos_token
+
+        # if self.rescoring:
+        #     device = 'cuda'
+        #     model_name = "gpt2"
+        #     # model_name = "gpt2-large"
+        #     from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForCausalLM, AutoTokenizer
+        #     self.rescoring_model = (
+        #         AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, is_decoder=True)
+        #         .to(device)
+        #         .eval()
+        #     )
+        #     self.rescoring_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        #     self.rescoring_tokenizer.pad_token = self.rescoring_tokenizer.eos_token
+
+
+
+        if self.rescoring : 
+            # # my model
+            # print('cfg.decoding.rescoringlmpath',cfg.decoding.rescoringlmpath)
+            # path, checkpoint = os.path.split(cfg.decoding.rescoringlmpath)
+            # overrides = {
+            #     "task": 'language_modeling',
+            #     "data": path,
+            # }
+            # logger.info("| loading rescoring lm model from {}".format(cfg.decoding.rescoringlmpath))
+            # rescoring_models, rescoring_saved_cfg, rescoring_task = checkpoint_utils.load_model_ensemble_and_task(
+            #     utils.split_paths(cfg.decoding.rescoringlmpath, separator="\\"),
+            #     arg_overrides=overrides,
+            #     strict=True,
+            # )
+
+            # self.rescoring_model = rescoring_models[0]
+            # self.rescoring_model.eval().cuda()
+            # self.rescoring_model.make_generation_fast_()
+            # if rescoring_saved_cfg.common.fp16:
+            #     self.rescoring_model.half()
+            # self.rescoring_model = self.rescoring_model.decoder
+
+            # dict_path = os.path.join(path,'dict.txt')
+            # self.rescoring_dict = Dictionary.load(dict_path)
+
+            # original code
+            logger.info("| loading rescoring lm model from {}".format(cfg.decoding.rescoringlmpath))
+            path, checkpoint = os.path.split(self.cfg.decoding.rescoringlmpath)
+            dict_path = os.path.join(path,'dict.txt')
+            self.rescoring_dict = Dictionary.load(dict_path)
+            self.rescoring_model = load_rescoring_model(self.cfg.decoding.rescoringlmpath, 'transformer', dict_path)
+            self.rescoring_model.eval().cuda()
+
+            # # gpt model
+            # model_name = "gpt2"
+            # from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForCausalLM, AutoTokenizer
+
+            # gpt_rescoring_model = (
+            #     AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, is_decoder=True)
+            #     .to('cuda')
+            #     .eval()
+            # )
+            # gpt_rescoring_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            # gpt_rescoring_tokenizer.pad_token = gpt_rescoring_tokenizer.eos_token
+
 
     def __enter__(self) -> "InferenceProcessor":
         if self.cfg.decoding.results_path is not None:
@@ -316,8 +471,8 @@ class InferenceProcessor:
             print(f"{tgt_words} ({speaker}-{sid})", file=self.ref_words_file)
 
         if not self.cfg.common_eval.quiet:
-            logger.info(f"HYPO: {hyp_words}")
-            logger.info(f"REF : {tgt_words}")
+            logger.info(f"HYPO : {hyp_words}")
+            logger.info(f"TARG : {tgt_words}")
             logger.info("---------------------")
 
         hyp_words, tgt_words = hyp_words.split(), tgt_words.split()
@@ -332,41 +487,129 @@ class InferenceProcessor:
             sample=sample,
         )
 
+        # if self.rescoring:
+        #     reordered_hypos = []
+        #     for nbest_hypos in hypos:
+        #         inputs = []
+        #         beams = []
+        #         for hypo in nbest_hypos:
+        #             inputs.append(' '.join(hypo['words']))
+        #         encoded = self.rescoring_tokenizer(inputs, return_tensors='pt', padding=True, truncation=True)['input_ids'].to(self.rescoring_model.device)
+        #         inputs_mask = (encoded != self.rescoring_tokenizer.pad_token_id)
+
+        #         with torch.no_grad():
+        #             output = self.rescoring_model(input_ids=encoded, attention_mask=inputs_mask)
+        #             log_probs = torch.nn.functional.log_softmax(output.logits, dim=-1)
+        #             target_log_probs = log_probs[:, :-1].gather(2, encoded[:, 1:].unsqueeze(2)).squeeze(2)
+        #             neural_lm_score = torch.sum(target_log_probs * inputs_mask[:, 1:], dim=-1)
+        #             rescored_results=(neural_lm_score)
+
+        #         for hypo, rescored_result in zip(nbest_hypos, rescored_results):
+        #             beams.append({
+        #                 "tokens":hypo['tokens'], 
+        #                 "score" : hypo['score'], 
+        #                 "timesteps" : hypo['timesteps'], 
+        #                 "words" : hypo['words'], 
+        #                 "rescoring" : rescored_result,
+        #                 "total_score" : hypo['score'] + self.rescoring_weight * rescored_result
+        #                 })
+
+        #         # Original Rescoring log P_{AM} (y|x) + \alpha1 log P_{LM1}(y) + \beta |y| + \alpha2 log P_{LM2}(y)
+        #         # on the fly
+        #         sorted_beams = sorted(beams, reverse=True, key=lambda x:x['total_score'])
+        #         reordered_hypos.append(sorted_beams)
+        #     hypos = reordered_hypos
+
         if self.rescoring:
-            reordered_hypos = []
-            for nbest_hypos in hypos:
-                inputs = []
-                beams = []
-                for hypo in nbest_hypos:
-                    inputs.append(' '.join(hypo['words']))
-                encoded = self.rescoring_tokenizer(inputs, return_tensors='pt', padding=True, truncation=True)['input_ids'].to(self.rescoring_model.device)
-                inputs_mask = (encoded != self.rescoring_tokenizer.pad_token_id)
+            for i, nbest_hypos in enumerate(hypos):
+                batch = []
+                max_len = 0
+                for j, n_th_hypo in enumerate(nbest_hypos):
 
-                with torch.no_grad():
-                    output = self.rescoring_model(input_ids=encoded, attention_mask=inputs_mask)
-                    log_probs = torch.nn.functional.log_softmax(output.logits, dim=-1)
-                    target_log_probs = log_probs[:, :-1].gather(2, encoded[:, 1:].unsqueeze(2)).squeeze(2)
-                    neural_lm_score = torch.sum(target_log_probs * inputs_mask[:, 1:], dim=-1)
-                    rescored_results=(neural_lm_score)
+                    sent = n_th_hypo['words']
+                    score = n_th_hypo['score']
+                    hypos[i][j]['wl_len'] = len(sent) + len("".join(sent))
+                    sent = " ".join(sent).lower().split()
 
-                for hypo, rescored_result in zip(nbest_hypos, rescored_results):
-                    beams.append({
-                        "tokens":hypo['tokens'], 
-                        "score" : hypo['score'], 
-                        "timesteps" : hypo['timesteps'], 
-                        "words" : hypo['words'], 
-                        "rescoring" : rescored_result,
-                        "total_score" : hypo['score'] + self.rescoring_weight * rescored_result
-                        })
+                    '''
+                    (base) [irteam@adev-closer-pgpu02.clova text]$ head -10 librispeech-lm-norm.txt.lower.shuffle
+                    so the reinforcements you were expecting won't get here tonight after all he remarked softly
+                    why is she a saint omar illegitimate no saint omar sans reproche
+                    death levels all he had no feeling that the cottagers standing at their garden gates were intruding their curiosity as was felt by susan's mother for one who thought this public tramp between a station and a church an outrage on her nobility
+                    then he looked up again speaking in the same equal voice
+                    he made confession of his sins and promised an entire amendment of life if the almighty would deliver him from his enemies and restore him to his throne
+                    as soon as it found itself on firm ground it began to throw its legs out in all directions but toko held it fast by the halter
+                    tra la chrees'mas day
+                    purvis left his horse in the cool of the paraiso trees during the day and a peon brought it to the door after he had eaten a frugal dinner during which meal he attended far more to the wants of his child than to his own
+                    his finger silently pointed her to withdraw
+                    footnote twelve the name is corrupted as are all those handed down by the early historians
 
-                # Original Rescoring log P_{AM} (y|x) + \alpha1 log P_{LM1}(y) + \beta |y| + \alpha2 log P_{LM2}(y)
-                # on the fly
-                sorted_beams = sorted(beams, reverse=True, key=lambda x:x['total_score'])
-                reordered_hypos.append(sorted_beams)
-            hypos = reordered_hypos
+                    (Pdb) " ".join(sent)
+                    "I AM WILLING TO ENTER INTO COMPETITION WITH THE ANCIENTS AND FEEL ABLE TO SURPASS THEM FOR SINCE THOSE EARLY DAYS IN WHICH 
+                    I MADE THE MEDALS OF POPE CLEMENT I HAVE LEARNED SO MUCH THAT I CAN NOW PRODUCE FAR BETTER PIECES OF THE KIND I THINK I CAN ALSO 
+                    OUTDO THE COINS I STRUCK FOR DUKE ALESSANDRO WHICH ARE STILL HELD IN HIGH ESTEEM IN LIKE MANNER I COULD MAKE FOR YOU LARGE PIECES 
+                    OF GOLD AND SILVER PLATE AS I DID SO OFTEN FOR THAT NOBLE MONARCH KING FRANCIS OF FRANCE THANKS TO THE GREAT CONVENIENCES HE ALLOWED 
+                    ME WITHOUT EVER LOSING TIME FOR THE EXECUTION OF COLOSSAL STATUES OR OTHER WORKS OF THE SCULPTOR'S CRAFT"
 
-        # import pdb
-        # pdb.set_trace()
+                    (Pdb) " ".join(sent).lower()
+                    "i am willing to enter into competition with the ancients and feel able to surpass them for since those early days in which 
+                    i made the medals of pope clement i have learned so much that i can now produce far better pieces of the kind i think i can also 
+                    outdo the coins i struck for duke alessandro which are still held in high esteem in like manner i could make for you large pieces 
+                    of gold and silver plate as i did so often for that noble monarch king francis of france thanks to the great conveniences he allowed 
+                    me without ever losing time for the execution of colossal statues or other works of the sculptor's craft"
+
+                    (Pdb) " ".join(sent).lower().split()
+                    ['i', 'am', 'willing', 'to', 'enter', 'into', 'competition', 'with', 'the', 'ancients', 'and', 'feel', 'able', 'to', 'surpass', 
+                    'them', 'for', 'since', 'those', 'early', 'days', 'in', 'which', 'i', 'made', 'the', 'medals', 'of', 'pope', 'clement', 'i', 
+                    'have', 'learned', 'so', 'much', 'that', 'i', 'can', 'now', 'produce', 'far', 'better', 'pieces', 'of', 'the', 'kind', 'i', 
+                    'think', 'i', 'can', 'also', 'outdo', 'the', 'coins', 'i', 'struck', 'for', 'duke', 'alessandro', 'which', 'are', 'still', 
+                    'held', 'in', 'high', 'esteem', 'in', 'like', 'manner', 'i', 'could', 'make', 'for', 'you', 'large', 'pieces', 'of', 'gold', 
+                    'and', 'silver', 'plate', 'as', 'i', 'did', 'so', 'often', 'for', 'that', 'noble', 'monarch', 'king', 'francis', 'of', 'france', 
+                    'thanks', 'to', 'the', 'great', 'conveniences', 'he', 'allowed', 'me', 'without', 'ever', 'losing', 'time', 'for', 'the', 'execution', 
+                    'of', 'colossal', 'statues', 'or', 'other', 'works', 'of', 'the', "sculptor's", 'craft']
+                    '''
+
+                    # import pdb; pdb.set_trace()
+
+                    batch.append(sent)
+
+                max_len = len(sorted(batch, key=lambda x: len(x))[-1])
+                # ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, self.rescoring_model.decoder, self.rescoring_dict, max_len)
+                ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, self.rescoring_model, self.rescoring_dict, max_len)
+
+                '''
+                # half()
+                if hypothesis is upper case, we should lower sentence for lower word transformer
+                (Pdb) ppls
+                [-39.53208, -39.53209, -39.53208, -39.67231, -39.53208, -39.53209, -39.67231, -39.53209, -39.53208, -39.53209, 
+                -39.53208, -39.53209, -39.53208, -39.53209, -39.53208, -39.67231, -39.53208, -39.53209, -39.53208, -39.53209, 
+                -39.53208, -39.53209, -39.53208, -39.53209, -39.67231, -39.67231, -39.53208, -39.53209, -39.389668, -39.67231, 
+                -39.53208, -39.53209, -39.67231, -39.53209, -39.53208, -39.53209, -39.67231, -39.67231, -39.53208, -39.53209, 
+                -39.53208, -39.53209, -39.53208, -39.67231, -39.53208, -39.53209, -39.53208, -39.53209, -39.53208, -39.389675]
+
+                (Pdb) ppls
+                [-449.8855, -457.82663, -455.54514, -454.2732, -452.20465, -462.68192, -462.01917, -460.2545, -475.82095, -451.28564, 
+                -462.25165, -457.00897, -455.3532, -474.80624, -459.50165, -456.44742, -454.30377, -470.56497, -463.97653, -463.7325, 
+                -463.35968, -456.01425, -464.98883, -458.7563, -456.29196, -460.85138, -457.89813, -455.57092, -459.9813, -464.54758, 
+                -461.90475, -454.58594, -456.65198, -470.7382, -453.04877, -471.61276, -458.97662, -458.7723, -453.94193, -464.0407, 
+                -456.44324, -472.36307, -466.57474, -463.2118, -465.00317, -456.67255, -465.95905, -453.54788, -450.17545, -449.16412]
+
+                (Pdb) predict_batch_for_rescoring(batch, self.rescoring_model.half(), self.rescoring_dict, max_len)[0]
+                [-450.0, -458.0, -455.8, -454.0, -452.2, -462.8, -462.0, -460.2, -476.0, -451.5, -462.2, -457.0, -455.5, -475.0, -459.8, 
+                -456.5, -454.5, -470.8, -464.0, -463.8, -463.5, -456.2, -465.0, -458.8, -456.2, -460.8, -458.0, -455.8, -460.0, -464.8, 
+                -462.0, -454.5, -456.8, -470.8, -453.0, -471.8, -459.0, -458.8, -454.0, -464.2, -456.5, -472.5, -466.8, -463.2, 
+                -464.8, -456.8, -466.0, -453.5, -450.2, -449.2]
+                '''
+
+                for j, (n_th_hypo, ppl) in enumerate(zip(nbest_hypos,ppls)):
+                    hypos[i][j]['rescoring_lm_ppl'] = ppl
+                    # hypos[i][j]['total_score'] = n_th_hypo['score'] + self.rescoring_weight * ppl
+                    hypos[i][j]['total_score'] = n_th_hypo['am_score'] + self.rescoring_weight * ppl + self.rescoring_word_len_weight * n_th_hypo['wl_len']
+                
+                # import pdb; pdb.set_trace()
+
+                hypos[i] = sorted(nbest_hypos, key=lambda x: -x["total_score"])
+                # hypos[i] = sorted(nbest_hypos, key=lambda x: -x["rescoring_lm_ppl"])
 
         num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
         self.gen_timer.stop(num_generated_tokens)

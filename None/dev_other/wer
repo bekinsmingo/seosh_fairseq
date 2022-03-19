@@ -1,20 +1,22 @@
-WER: 4.28476093271571
-err / num_ref_words = 2183 / 50948
+WER: 6.037528460390987
+err / num_ref_words = 3076 / 50948
 
 _name: null
-nbest: 1
-unitlm: true
-lmpath: /mnt/clova_speech/users/seosh/fairseq_lm/librispeech_12layer_transformer_xl_char_lm_model_bbs_bos/checkpoint_best.pt
-lexicon: null
-beam: 10
-beamthreshold: 10.0
+nbest: 8
+unitlm: false
+lmpath: /workspace/librispeech_model/decoder/4-gram.arpa
+lexicon: /workspace/librispeech_model/librispeech_lexicon.lst
+beam: 500
+beamthreshold: 20.0
 beamsizetoken: 100
-wordscore: 2.007453215950754
+wordscore: 0.52
 unkweight: -.inf
-silweight: -1.486608728025944
-lmweight: 0.17877095264164722
-rescoring: false
-rescoringweight: 2.0
-type: fairseqlm
+silweight: 0.0
+lmweight: 1.74
+rescoring: true
+rescoringweight: 0.4281736162191607
+rescoringwordlenweight: 2.762377591191097
+rescoringlmpath: /workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
+type: kenlm
 unique_wer_file: false
 results_path: null

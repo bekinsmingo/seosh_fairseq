@@ -304,11 +304,22 @@ class W2lKenLMDecoder(W2lDecoder):
 
             nbest_results = results[: self.nbest] # nbest 가 1
 
+            # import pdb; pdb.set_trace()
+
+            '''
+            (Pdb) nbest_results[0].amScore
+            21540.401293754578
+            (Pdb) nbest_results[0].lmScore
+            -258.7231324315071
+            '''
+
             hypos.append(
                 [
                     {
                         "tokens": self.get_tokens(result.tokens),
                         "score": result.score,
+                        "am_score": result.amScore,
+                        "lm_score": result.lmScore,
                         "timesteps": self.get_timesteps(result.tokens),
                         "words": [
                             self.word_dict.get_entry(x) for x in result.words if x >= 0

@@ -110,7 +110,7 @@ class CtcCriterion(FairseqCriterion):
         net_output = model(**sample["net_input"])
         lprobs = model.get_normalized_probs(
             net_output, log_probs=True
-        ).contiguous()  # (T, B, C) from the encoder
+        ).contiguous()  # (T, B, C) from the encoder # e.g. torch.Size([634, 8, 32])
 
         if "src_lengths" in sample["net_input"]:
             input_lengths = sample["net_input"]["src_lengths"]
@@ -122,6 +122,11 @@ class CtcCriterion(FairseqCriterion):
                 input_lengths = lprobs.new_full(
                     (lprobs.size(1),), lprobs.size(0), dtype=torch.long
                 )
+        
+        '''
+        (Pdb) input_lengths
+        tensor([634, 634, 634, 634, 634, 634, 634, 634], device='cuda:0')
+        '''
 
         pad_mask = (sample["target"] != self.pad_idx) & (
             sample["target"] != self.eos_idx
@@ -131,6 +136,44 @@ class CtcCriterion(FairseqCriterion):
             target_lengths = sample["target_lengths"]
         else:
             target_lengths = pad_mask.sum(-1)
+
+        '''
+        (Pdb) pad_mask
+        tensor([[ True,  True,  True,  ..., False, False, False],
+                [ True,  True,  True,  ..., False, False, False],
+                [ True,  True,  True,  ...,  True,  True,  True],
+                ...,
+                [ True,  True,  True,  ..., False, False, False],
+                [ True,  True,  True,  ..., False, False, False],
+                [ True,  True,  True,  ..., False, False, False]], device='cuda:0')
+        (Pdb) pad_mask.size()
+        torch.Size([8, 240])
+
+        (Pdb) sample["target"]
+        tensor([[10,  6,  4,  ...,  1,  1,  1],
+                [13,  7, 24,  ...,  1,  1,  1],
+                [20,  8, 13,  ..., 10, 21,  4],
+                ...,
+                [14,  5, 21,  ...,  1,  1,  1],
+                [18, 11,  5,  ...,  1,  1,  1],
+                [ 8,  9,  4,  ...,  1,  1,  1]], device='cuda:0', dtype=torch.int32)
+        (Pdb) sample["target"].size()
+        torch.Size([8, 240])
+
+        (Pdb) targets_flat
+        tensor([10,  6,  4,  ..., 11,  6,  4], device='cuda:0', dtype=torch.int32)
+
+        (Pdb) targets_flat.size()
+        torch.Size([1514])
+
+        (Pdb) sample["target_lengths"]
+        tensor([174, 221, 240, 156, 199, 142, 189, 193], device='cuda:0')
+        
+        (Pdb) target_lengths
+        tensor([174, 221, 240, 156, 199, 142, 189, 193], device='cuda:0')
+        '''
+
+        import pdb; pdb.set_trace()
 
         with torch.backends.cudnn.flags(enabled=False):
             loss = F.ctc_loss(

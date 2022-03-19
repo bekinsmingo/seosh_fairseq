@@ -49,8 +49,8 @@ hydra:
       max_trials: 128
       early_stop:
         minimize: true
-        max_epochs_without_improvement: 10
-        epsilon: 0.025
+        max_epochs_without_improvement: 32
+        epsilon: 1.0e-05
       experiment:
         name: ${dataset.gen_subset}
         objective_name: wer
@@ -62,22 +62,16 @@ hydra:
         verbose_logging: false
         random_seed: null
       params:
-        decoding.lmweight:
+        decoding.rescoringweight:
           type: range
           bounds:
           - 0.0
           - 5.0
-        decoding.wordscore:
+        decoding.rescoringwordlenweight:
           type: range
           bounds:
           - -5.0
           - 5.0
-        decoding.silweight:
-          type: range
-          bounds:
-          - -8.0
-          - 0.0
-      is_noisy: true
   launcher:
     _target_: hydra._internal.core_plugins.basic_launcher.BasicLauncher
   help:
@@ -138,29 +132,33 @@ hydra:
   output_subdir: .hydra
   overrides:
     hydra:
-    - hydra/sweeper=ax
+    - hydra/sweeper=ax4
     task:
-    - decoding.lmweight=0.2855569016533901
-    - decoding.wordscore=-2.508438592326966
-    - decoding.silweight=-0.44677176421313547
-    - common.user_dir=/workspace/fairseq/examples/truncated_bptt
+    - decoding.rescoringweight=1.4925866910130725
+    - decoding.rescoringwordlenweight=-5.0
     - task=audio_finetuning
     - task.data=/workspace/librispeech_model/am/fairseq_audio_data2
     - task.labels=ltr
-    - common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
-    - decoding.type=fairseqlm
-    - decoding.unitlm=True
-    - decoding.lmpath=/mnt/clova_speech/users/seosh/fairseq_lm/librispeech_12layer_transformer_xl_char_lm_model_bbs_bos/checkpoint_best.pt
-    - decoding.beam=10
-    - decoding.beamthreshold=10
+    - common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec_small_960h.pt
+    - decoding.type=kenlm
+    - decoding.lexicon=/workspace/librispeech_model/librispeech_lexicon.lst
+    - decoding.lmpath=/workspace/librispeech_model/decoder/4-gram.arpa
+    - decoding.beam=500
+    - decoding.lmweight=1.74
+    - decoding.wordscore=0.52
+    - decoding.silweight=0.0
+    - decoding.beamthreshold=20.0
     - decoding.beamsizetoken=100
+    - decoding.nbest=8
     - dataset.gen_subset=dev_other
-    - dataset.batch_size=32
+    - dataset.batch_size=1
+    - decoding.rescoring=True
+    - decoding.rescoringlmpath=/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
   job:
     name: utils
-    override_dirname: common.user_dir=/workspace/fairseq/examples/truncated_bptt,common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt,dataset.batch_size=32,dataset.gen_subset=dev_other,decoding.beam=10,decoding.beamsizetoken=100,decoding.beamthreshold=10,decoding.lmpath=/mnt/clova_speech/users/seosh/fairseq_lm/librispeech_12layer_transformer_xl_char_lm_model_bbs_bos/checkpoint_best.pt,decoding.lmweight=0.2855569016533901,decoding.silweight=-0.44677176421313547,decoding.type=fairseqlm,decoding.unitlm=True,decoding.wordscore=-2.508438592326966,task.data=/workspace/librispeech_model/am/fairseq_audio_data2,task.labels=ltr,task=audio_finetuning
-    id: '24'
-    num: 24
+    override_dirname: common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec_small_960h.pt,dataset.batch_size=1,dataset.gen_subset=dev_other,decoding.beam=500,decoding.beamsizetoken=100,decoding.beamthreshold=20.0,decoding.lexicon=/workspace/librispeech_model/librispeech_lexicon.lst,decoding.lmpath=/workspace/librispeech_model/decoder/4-gram.arpa,decoding.lmweight=1.74,decoding.nbest=8,decoding.rescoring=True,decoding.rescoringlmpath=/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt,decoding.rescoringweight=1.4925866910130725,decoding.rescoringwordlenweight=-5.0,decoding.silweight=0.0,decoding.type=kenlm,decoding.wordscore=0.52,task.data=/workspace/librispeech_model/am/fairseq_audio_data2,task.labels=ltr,task=audio_finetuning
+    id: '125'
+    num: 125
     config_name: infer
     env_set: {}
     env_copy: []

@@ -150,11 +150,16 @@ class KenLMDecoder(BaseDecoder):
             results = self.decoder.decode(emissions_ptr, T, N)
 
             nbest_results = results[: self.nbest]
+
+            # import pdb; pdb.set_trace()
+
             hypos.append(
                 [
                     {
                         "tokens": self.get_tokens(result.tokens),
                         "score": result.score,
+                        "am_score": result.amScore,
+                        "lm_score": result.lmScore,
                         "timesteps": self.get_timesteps(result.tokens),
                         "words": [
                             self.word_dict.get_entry(x) for x in result.words if x >= 0
