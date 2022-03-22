@@ -74,14 +74,17 @@ decoding:
   beam: 1500
   beamthreshold: 20.0
   beamsizetoken: 100
-  wordscore: 0.52
+  wordscore: -0.64
   unkweight: -.inf
-  silweight: 0.0
-  lmweight: 1.74
+  silweight: -0.15131225610039412
+  lmweight: 1.57
   rescoring: true
-  rescoringweight: 0.8149553446097952
-  rescoringwordlenweight: -0.21418670094166092
+  rescoringweight: 0.9738779982792846
+  rescoringwordlenweight: 0.6365406878481483
   rescoringlmpath: /workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
+  generalrescoring: true
+  generalrescoringweight: -10.0
+  generalrescoringlmpath: /workspace/librispeech_model/decoder/roberta.base/model.pt
   type: kenlm
   unique_wer_file: false
   results_path: null
@@ -124,9 +127,9 @@ common:
   plasma_path: /tmp/plasma
 common_eval:
   _name: null
-  path: /workspace/librispeech_model/am/w2v2/wav2vec_small_960h.pt
+  path: /workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
   post_process: letter
-  quiet: true
+  quiet: false
   model_overrides: '{}'
   results_path: null
 checkpoint:

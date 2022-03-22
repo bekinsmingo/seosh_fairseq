@@ -67,21 +67,24 @@ task:
   autoregressive: false
 decoding:
   _name: null
-  nbest: 8
+  nbest: 50
   unitlm: false
   lmpath: /workspace/librispeech_model/decoder/4-gram.arpa
   lexicon: /workspace/librispeech_model/librispeech_lexicon.lst
   beam: 500
   beamthreshold: 20.0
   beamsizetoken: 100
-  wordscore: 0.52
+  wordscore: -0.64
   unkweight: -.inf
-  silweight: 0.0
-  lmweight: 1.74
+  silweight: -0.15131225610039412
+  lmweight: 1.57
   rescoring: true
-  rescoringweight: 1.4925866910130725
-  rescoringwordlenweight: -5.0
+  rescoringweight: 2.0
+  rescoringwordlenweight: 2.0
   rescoringlmpath: /workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
+  generalrescoring: false
+  generalrescoringweight: -6.298213098198175
+  generalrescoringlmpath: null
   type: kenlm
   unique_wer_file: false
   results_path: null
@@ -124,7 +127,7 @@ common:
   plasma_path: /tmp/plasma
 common_eval:
   _name: null
-  path: /workspace/librispeech_model/am/w2v2/wav2vec_small_960h.pt
+  path: /workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
   post_process: letter
   quiet: true
   model_overrides: '{}'
@@ -203,8 +206,8 @@ dataset:
   _name: null
   num_workers: 1
   skip_invalid_size_inputs_valid_test: false
-  max_tokens: 3000000
-  batch_size: 1
+  max_tokens: 4000000
+  batch_size: null
   required_batch_size_multiple: 8
   required_seq_len_multiple: 1
   dataset_impl: null

@@ -74,6 +74,9 @@ def add_asr_eval_argument(parser):
     parser.add_argument("--rescoring-model", help="lm model for rescoring")
     parser.add_argument("--rescoring-weight", type=float, default=1.0)
     parser.add_argument("--rescoring-word-len-weight", type=float, default=1.0)
+    parser.add_argument("--general-rescoring", action="store_true")
+    parser.add_argument("--general-rescoring-model", default = None, help="lm model for rescoring")
+    parser.add_argument("--general-rescoring-weight", type=float, default=0.0)
     parser.add_argument("--spelling_correction", action="store_true")
     parser.add_argument("--hparam_search", action="store_true")
 
@@ -390,6 +393,175 @@ def predict_batch_for_rescoring(sentences, model, fairseq_dict, max_len):
 
         total_loss += loss
         nwords += len(input_i) + 1
+
+    '''
+    (Pdb) ' '.join(sentences[0]); x[0]; torch.LongTensor(encoded_input[0]); model.adaptive_softmax.get_log_prob(y, None)[0].max(-1)[1]; logprobs[0, numpy.arange(len(encoded_input[0])), encoded_input[0]]                                                                      
+                                                                
+    "i am willing to enter into competition with the ancients and feel able to surpass them for since those early days 
+    in which i made the medals of pope clement i have learned so much that i can now produce far better pieces of the kind 
+    i think i can also outdo the coins i struck for duke alessandro which are still held in high esteem in like manner 
+    i could make for you large pieces of gold and silver plate as i did so often for that noble monarch king francis of france 
+    thanks to the great conveniences he allowed me without ever losing time for the execution of colossal statues or other works of the sculptor's craft"
+
+    tensor([    2,    10,   134,  1376,     7,  1106,    64,  7431,    16,     4,
+            10432,     5,   356,   433,     7, 15349,    53,    19,   264,   130,
+            519,   233,     9,    34,    10,    93,     4, 16706,     6,  3404,
+            9543,    10,    29,   765,    41,   105,    12,    10,    91,    65,
+            2204,   194,   209,  1380,     6,     4,   292,    10,   124,    10,
+            91,   226, 30331,     4,  8978,    10,   642,    19,  1299, 19243,
+            34,    47,   140,   361,     9,   300,  4266,     9,    73,   430,
+            10,    62,   129,    19,    17,   325,  1380,     6,   590,     5,
+            1027,  2565,    18,    10,    79,    41,   336,    19,    12,   930,
+            5009,   321,  3275,     6,   903,  1804,     7,     4,    99, 18188,
+            11,   933,    40,   141,   161,  3092,    71,    19,     4,  3615,
+                6,  8886,  6828,    46,    88,  1199,     6,     4, 32003,  2603,
+                2], device='cuda:0')
+
+    tensor([   10,   134,  1376,     7,  1106,    64,  7431,    16,     4, 10432,
+                5,   356,   433,     7, 15349,    53,    19,   264,   130,   519,
+            233,     9,    34,    10,    93,     4, 16706,     6,  3404,  9543,
+            10,    29,   765,    41,   105,    12,    10,    91,    65,  2204,
+            194,   209,  1380,     6,     4,   292,    10,   124,    10,    91,
+            226, 30331,     4,  8978,    10,   642,    19,  1299, 19243,    34,
+            47,   140,   361,     9,   300,  4266,     9,    73,   430,    10,
+            62,   129,    19,    17,   325,  1380,     6,   590,     5,  1027,
+            2565,    18,    10,    79,    41,   336,    19,    12,   930,  5009,
+            321,  3275,     6,   903,  1804,     7,     4,    99, 18188,    11,
+            933,    40,   141,   161,  3092,    71,    19,     4,  3615,     6,
+            8886,  6828,    46,    88,  1199,     6,     4, 32003,  2603])
+    
+    tensor([    4,    29,    24,     7,  1697,    64,    81,    16,    17,   268,
+                9,     7,    12,     7,    63,    53,     9,    10,    10,   233,
+            233,    10,    34,    10,    13,    37,  1672,    10,     4,  7846,
+            10,  1611,    55,     7,   105,    36,    10,   134,    65,   767,
+                4,    61,  1052,    75,   187,   292,     2,    29,    10,   114,
+            63,    63,    53, 21600,     6,    29,     9,     4,  1341,     2,
+            38,    65,     9,     9,   300,  8527,     2,  2503,   430,    18,
+            91,   129,     4,   261,     8,  7201,     6,   590,     5,  1027,
+            34,    34,    82,    29,    19,    10,    19,     4,    22,  1299,
+                2,  1341,    10,   903,     2,     7,     4,    94,   385,    34,
+            20,    40,     9,    81,  1643,    15,     9,    10,   187,     6,
+            15,  1199,     2,     4,  1199,     6,   602,   292,   602,     2,
+            10], device='cuda:0')
+            
+    array([ -2.615 ,  -2.7   ,  -5.297 ,  -0.2228,  -6.863 ,  -0.7495,
+            -5.875 ,  -0.1395,  -2.504 ,  -8.67  ,  -2.242 ,  -7.816 ,
+            -7.16  ,  -0.0781,  -5.723 ,  -0.1248,  -4.305 ,  -6.55  ,
+            -5.242 ,  -4.184 ,  -0.5024,  -3.232 ,  -1.035 ,  -0.7236,
+            -4.66  ,  -1.757 , -11.84  ,  -1.67  , -10.555 ,  -4.082 ,
+            -0.9688,  -2.02  ,  -3.447 ,  -5.598 ,  -0.2983,  -2.12  ,
+            -0.8003,  -1.899 ,  -1.126 ,  -5.266 ,  -7.195 ,  -1.287 ,
+            -4.254 ,  -2.688 ,  -4.19  ,  -1.108 ,  -5.52  ,  -4.945 ,
+            -2.092 ,  -1.81  ,  -3.822 ,  -6.98  ,  -1.836 , -11.664 ,
+            -4.05  ,  -6.39  ,  -3.504 ,  -9.18  ,  -5.527 ,  -4.78  ,
+            -2.094 ,  -2.988 ,  -6.29  ,  -0.5767,  -1.183 ,  -1.285 ,
+            -1.819 , -10.97  ,  -0.0951,  -1.179 ,  -4.45  ,  -2.348 ,
+            -5.49  ,  -3.62  ,  -7.07  ,  -4.54  ,  -0.1964,  -1.231 ,
+            -1.785 ,  -1.103 ,  -4.457 ,  -3.604 ,  -2.438 ,  -2.36  ,
+            -5.875 ,  -6.848 ,  -1.839 ,  -5.17  ,  -3.281 ,  -3.613 ,
+            -5.516 ,  -2.512 ,  -2.635 ,  -0.9287, -10.234 ,  -0.4602,
+            -0.908 ,  -3.922 , -11.08  ,  -2.99  ,  -4.92  ,  -0.54  ,
+            -6.17  ,  -3.47  ,  -5.57  ,  -3.275 ,  -3.29  ,  -2.719 ,
+            -5.24  ,  -0.0607, -12.1   ,  -2.686 ,  -3.887 ,  -2.244 ,
+            -0.75  ,  -0.3792,  -3.389 ,  -6.965 ,  -4.855 ], dtype=float16)
+    '''
+
+
+    return ppls, total_loss, nwords
+
+
+def predict_batch_for_rescoring_roberta(sentences, model, fairseq_dict, max_len=None):
+    encoded_input = []
+    input_length = []
+    padded_input = []
+    ppls = []
+
+    total_loss = 0.0
+    nwords = 0
+
+    for sentence in sentences:
+        encoded = model.encode(sentence).tolist()
+        encoded_input.append(encoded)
+        input_length.append(len(encoded))
+
+    max_len = max(input_length)
+
+
+    for inp in encoded_input: 
+        if len(inp) < max_len:
+            padded_input.append(
+                inp + [fairseq_dict.pad()] * (max_len - len(inp))
+            )
+        else:
+            padded_input.append(inp)
+    x = torch.LongTensor(padded_input).cuda()
+
+    with torch.no_grad():
+        y = model.model(x)[0]
+        # logprobs = model.model.get_normalized_probs(y, True)
+        logprobs = torch.nn.functional.log_softmax(y, 2).detach().cpu().numpy()
+
+    for index, input_i in enumerate(encoded_input):
+        loss = numpy.sum(logprobs[index, numpy.arange(len(input_i)), input_i])
+        ppls.append(loss)
+
+        total_loss += loss
+        nwords += len(input_i)
+
+    '''
+    Example 1
+    (Pdb) sentences[0]; model.decode(x[0].cpu()); model.decode(torch.nn.functional.log_softmax(y, 2)[0].max(-1)[1].cpu())
+
+    'This he set in a saucer wetted with a little water and after waiting a short time smelt and tasted it and then he took 
+    out of the chest a booklet wherein he read a while and said weeping know o ye passengers that in this book is a marvellous 
+    matter denoting that whoso come hither shall surely die without hope of escape for that this ocean is called the sea of 
+    the clime of the king wherein is a sepulchre of our lord solomon son of david on both be peace.'
+
+    'This he set in a saucer wetted with a little water and after waiting a short time smelt and tasted it and then he took 
+    out of the chest a booklet wherein he read a while and said weeping know o ye passengers that in this book is a marvellous 
+    matter denoting that whoso come hither shall surely die without hope of escape for that this ocean is called the sea of 
+    the clime of the king wherein is a sepulchre of our lord solomon son of david on both be peace.'
+
+    'This he set in a saucer wetted with a little water and after waiting a short time smelt and tasted it and then he took 
+    out of the chest a booklet wherein he read a while and said, know o ye, that in this book is a marvellous 
+    matter denoting that whoso come hither shall surely die without hope of escape for that this ocean is called the sea of 
+    the clime of the king wherein is a sepulchre of our lord solomon son of david on both be peace the'
+
+    missing words => weeping, passengers
+    added words => the (last)
+
+    (Pdb) logprobs[0, numpy.arange(len(encoded_input[0])), encoded_input[0]]
+    array([-1.6475e-04, -7.5817e-05, -2.3007e-05, -1.2624e-04, -1.0848e-05,
+        -5.2452e-06, -1.1921e-07, -2.3842e-07, -2.9778e-04, -1.1702e-03,
+        -7.6175e-05, -1.1921e-06, -1.1921e-05, -7.0333e-06, -3.3932e-03,
+        -1.4424e-05, -1.0300e-04, -3.5763e-07, -2.6655e-04, -2.9087e-05,
+        -6.5565e-06, -2.0027e-05, -1.0097e-04, -1.8477e-05, -8.2254e-06,
+        -1.2083e-03, -4.7207e-05, -1.6212e-05, -1.7643e-05, -1.7881e-06,
+        -2.9731e-04, -4.2319e-05, -2.2717e-03, -7.1526e-06, -2.2449e-03,
+        -3.1662e-03, -6.4373e-06, -5.4002e-05, -3.5763e-07, -1.6470e-03,
+        -1.6689e-06, -5.7578e-05, -1.3711e+01, -2.4609e-01, -9.9304e-02,
+        -2.0866e-03, -1.0258e+01, -1.4067e-05, -9.8944e-06, -1.5020e-05,
+        -1.0920e-04, -9.7752e-06, -2.8610e-06, -1.1826e-04, -1.3590e-05,
+        -1.4782e-05, -2.9526e-02, -2.3770e-04, -4.7946e-04, -7.8678e-06,
+        -8.3447e-07, -9.7752e-06, -1.4186e-04, -1.6606e-04, -1.8954e-05,
+        -3.2496e-04, -1.2398e-04, -1.2994e-05, -1.3924e-04, -1.5020e-05,
+        -1.1530e-03, -6.2256e-03, -2.1935e-05, -1.5378e-05, -1.5320e-02,
+        -4.7684e-07, -1.9908e-05, -3.7551e-05, -1.9228e-04, -1.5974e-05,
+        -7.3633e-01, -1.4257e-03, -2.8885e-02, -6.3181e-06, -7.6514e-01,
+        -3.1982e-02, -1.9817e-03, -1.3113e-05, -1.2040e-05, -5.2452e-06,
+        -8.3447e-07, -1.5488e-03, -4.8923e-04, -3.2425e-05, -6.7472e-05,
+        -5.2404e-04, -1.9760e-03, -1.0884e-04, -5.1975e-05, -2.4676e-04,
+        -8.4961e-02, -1.0669e-01, -1.4541e+00, -1.6556e-02, -2.6840e-02,
+        -9.5654e-01, -2.2650e-05], dtype=float16)
+
+    (Pdb) encoded_input[0]
+    [0, 713, 37, 278, 11, 10, 2241, 43886, 7727, 5357, 19, 10, 410, 514, 8, 71, 2445, 10, 765, 86, 5278, 6607, 
+    8, 29143, 24, 8, 172, 37, 362, 66, 9, 5, 7050, 10, 39521, 26134, 37, 1166, 10, 150, 8, 26, 39423, 216, 1021, 
+    32440, 3670, 14, 11, 42, 1040, 16, 10, 4401, 22752, 1827, 948, 3069, 12653, 14, 8401, 18865, 283, 48586, 
+    5658, 8349, 1597, 396, 1034, 9, 5111, 13, 14, 42, 6444, 16, 373, 5, 3342, 9, 5, 3741, 4235, 9, 5, 8453, 
+    26134, 16, 10, 45821, 922, 611, 241, 9, 84, 30722, 9281, 28344, 979, 9, 44009, 15, 258, 28, 1987, 4, 2]
+    '''
+
     return ppls, total_loss, nwords
 
 
@@ -455,7 +627,6 @@ def main(args, task=None, model_state=None):
         device = 'cuda'
 
         print(args.rescoring_model)
-
         path, checkpoint = os.path.split(args.rescoring_model)
 
         overrides = {
@@ -474,18 +645,30 @@ def main(args, task=None, model_state=None):
         rescoring_model.make_generation_fast_()
         if rescoring_saved_cfg.common.fp16:
             rescoring_model.half()
+        rescoring_model = rescoring_model.decoder
 
         dict_path = os.path.join(path,'dict.txt')
         rescoring_dict = Dictionary.load(dict_path)
 
-        # import pdb; pdb.set_trace()
+        general_rescoring_model = None
+        general_rescoring_dict = None
+        if args.general_rescoring:
+            ## roberta
+            path, checkpoint = os.path.split(args.general_rescoring_model)
+            from fairseq.models.roberta import RobertaModel
+            general_rescoring_model = RobertaModel.from_pretrained(path, checkpoint_file=checkpoint)
+            general_rescoring_model.eval().cuda()
+            general_rescoring_model.half()
+
+            dict_path = os.path.join(path,'dict.txt')
+            general_rescoring_dict = Dictionary.load(dict_path)
+
 
         # path, checkpoint = os.path.split(args.rescoring_model)
         # dict_path = os.path.join(path,'dict.txt')
         # transformer_rescoring_dict = Dictionary.load(dict_path)
         # model = load_rescoring_model(args.rescoring_model, 'transformer', dict_path)
         # model.eval().cuda()
-
 
         # model_name = "gpt2"
         # # model_name = "gpt2-large"
@@ -514,6 +697,7 @@ def main(args, task=None, model_state=None):
         # from transformers import RobertaTokenizer, RobertaModel, RobertaForMaskedLM
         # rescoring_model = RobertaForMaskedLM.from_pretrained(model_name).to(device).eval()
         # rescoring_tokenizer = RobertaTokenizer.from_pretrained(model_name)
+
 
 
     # Set dictionary
@@ -651,23 +835,23 @@ def main(args, task=None, model_state=None):
             gen_timer.stop(num_generated_tokens)
 
 
-            total_loss = 0.0
-            nwords = 0.0
-            batch = []
-            original_lines = []
-            max_len = 0
-
-            # (Pdb) len(hypos) # 1
-            # (Pdb) len(nbest_hypos) # 50
 
             gen_timer_for_rescoring.start()
+
+            # total_loss = 0.0
+            # nwords = 0.0
+            # batch = []
+            # original_lines = []
+            # max_len = 0
 
             if args.rescoring:
                 for i, nbest_hypos in enumerate(hypos):
                     batch = []
+                    batch_for_roberta = []
                     max_len = 0
                     for j, n_th_hypo in enumerate(nbest_hypos):
 
+                        # for tfm
                         sent = n_th_hypo['words']
                         score = n_th_hypo['score'] # am + lm + word_penalty
                         hypos[i][j]['wl_len'] = len(sent) + len("".join(sent)) # word length + char length 
@@ -675,15 +859,69 @@ def main(args, task=None, model_state=None):
 
                         batch.append(sent)
 
+                        # for roberta
+                        tmp = " ".join(n_th_hypo['words'])
+                        if len(tmp)>1:
+                            batch_for_roberta.append(tmp[0].upper()+tmp[1:].lower()+'.')
+                        else:
+                            batch_for_roberta.append(' ')
+
                     max_len = len(sorted(batch, key=lambda x: len(x))[-1])
-                    ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, rescoring_model.decoder, rescoring_dict, max_len) # -39, -40
 
-                    for j, (n_th_hypo, ppl) in enumerate(zip(nbest_hypos,ppls)):
+                    ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, rescoring_model, rescoring_dict, max_len) # -39, -40
+
+                    if args.general_rescoring:
+                        general_ppls, general_loss_batch, general_nwords_batch = predict_batch_for_rescoring_roberta(batch_for_roberta, general_rescoring_model, general_rescoring_dict)
+                        # import pdb; pdb.set_trace()
+
+                    '''
+                    ## 20L TFM # in-domain
+                    (Pdb) ppls
+                    [-450.0, -458.0, -454.0, -451.5, -455.8, -452.2, -462.0, -450.8, 
+                    -459.8, -455.5, -464.8, -449.2, -460.2, -458.5, -470.8, -456.8, 
+                    -463.5, -456.5, -458.5, -478.5, -464.8, -462.2, -464.8, -454.2, 
+                    -464.8, -455.0, -454.5, -453.2, -451.0, -459.2, -470.8, -459.8, 
+                    -455.8, -453.2, -460.8, -465.0, -456.0, -462.0, -462.2, -457.0, 
+                    -460.2, -454.0, -465.2, -473.0, -454.5, -463.8, -450.2, -460.5, 
+                    -463.2, -456.2]
+
+                    # 중간에 -458.0 과 - 459.8 의 loss가 역전됨.
+
+                    ## 24L Roberta (Large) # out-domain
+                    (Pdb) general_ppls
+                    [-3.613, -10.66, -3.9, -3.613, -4.22, -3.396, -10.58, -3.703, 
+                    -10.2, -6.188, -11.27, -3.49, -10.48, -10.96, -3.418, -3.822, 
+                    -13.99, -3.984, -11.484, -10.664, -11.64, -3.531, -10.05, -4.03, 
+                    -3.582, -3.494, -3.51, -3.523, -3.543, -3.86, -10.734, -3.525, 
+                    -3.56, -4.07, -5.113, -4.035, -3.904, -3.662, -10.65, -3.547, 
+                    -3.275, -6.043, -6.836, -11.41, -3.637, -15.15, -3.527, -4.27, 
+                    -10.77, -2.256]
+
+                    ## 12L Roberta (Base)
+                    (Pdb) general_ppls
+                    [-1.846, -6.0, -1.913, -1.834, -2.822, -1.774, -5.78, -4.473, 
+                    -5.82, -3.25, -6.86, -1.707, -6.703, -8.71, -1.296, -2.508, 
+                    -6.977, -2.342, -5.598, -5.113, -5.977, -2.229, -6.05, -10.11, 
+                    -1.957, -1.839, -6.445, -1.879, -1.84, -4.195, -5.836, -1.863, 
+                    -8.45, -2.316, -2.562, -1.961, -1.904, -3.28, -13.26, -2.389, 
+                    -1.985, -4.484, -3.49, -5.89, -1.901, -13.13, -2.184, -2.826, 
+                    -5.86, -1.747]
+                    '''
+
+                    for j, n_th_hypo in enumerate(nbest_hypos):
+                        ppl = ppls[j]
+                        general_ppl = general_ppls[j] if args.general_rescoring else 0
                         hypos[i][j]['rescoring_lm_ppl'] = ppl
-                        hypos[i][j]['total_score'] = n_th_hypo['am_score'] + args.rescoring_weight * ppl + args.rescoring_word_len_weight * n_th_hypo['wl_len']
+                        hypos[i][j]['general_rescoring_lm_ppl'] = general_ppl
+                        hypos[i][j]['total_score'] = (
+                            n_th_hypo['am_score'] 
+                            + args.rescoring_weight * ppl 
+                            + args.general_rescoring_weight * general_ppl
+                            + args.rescoring_word_len_weight * n_th_hypo['wl_len'] 
+                            )
 
-                    hypos[i] = sorted(nbest_hypos, key=lambda x: -x["total_score"])
                     # hypos[i] = sorted(nbest_hypos, key=lambda x: -x["rescoring_lm_ppl"])
+                    hypos[i] = sorted(nbest_hypos, key=lambda x: -x["total_score"])
 
             num_generated_tokens_for_rescoring = sum(len(h[0]["tokens"]) for h in hypos)
             gen_timer_for_rescoring.stop(num_generated_tokens_for_rescoring)
@@ -710,7 +948,7 @@ def main(args, task=None, model_state=None):
                 #     import pdb; pdb.set_trace()
 
                 # if len(batch) > 0:
-                #     ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, rescoring_model.decoder, rescoring_dict, max_len)
+                #     ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, rescoring_model, rescoring_dict, max_len)
                 #     total_loss += loss_batch
                 #     nwords += nwords_batch
 

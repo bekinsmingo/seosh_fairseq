@@ -1,22 +1,25 @@
-WER: 6.037528460390987
-err / num_ref_words = 3076 / 50948
+WER: 3.3720656355499727
+err / num_ref_words = 1718 / 50948
 
 _name: null
-nbest: 8
+nbest: 50
 unitlm: false
 lmpath: /workspace/librispeech_model/decoder/4-gram.arpa
 lexicon: /workspace/librispeech_model/librispeech_lexicon.lst
 beam: 500
 beamthreshold: 20.0
 beamsizetoken: 100
-wordscore: 0.52
+wordscore: -0.64
 unkweight: -.inf
-silweight: 0.0
-lmweight: 1.74
+silweight: -0.15131225610039412
+lmweight: 1.57
 rescoring: true
-rescoringweight: 0.4281736162191607
-rescoringwordlenweight: 2.762377591191097
+rescoringweight: 2.0
+rescoringwordlenweight: 2.0
 rescoringlmpath: /workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
+generalrescoring: false
+generalrescoringweight: 0.5387743189930916
+generalrescoringlmpath: null
 type: kenlm
 unique_wer_file: false
 results_path: null

@@ -1,7 +1,7 @@
 optimizer: ax
 ax:
-  decoding.rescoringweight: 1.1960772209054291
-  decoding.rescoringwordlenweight: 1.1872859495081611
+  decoding.rescoringweight: 1.2037809729535696
+  decoding.rescoringwordlenweight: 1.2140628859555385
   task: audio_finetuning
   task.data: /workspace/librispeech_model/am/fairseq_audio_data2
   task.labels: ltr
@@ -17,6 +17,6 @@ ax:
   decoding.beamsizetoken: 100
   decoding.nbest: 8
   dataset.gen_subset: dev_other
-  dataset.max_tokens: 4000000
+  dataset.batch_size: 1
   decoding.rescoring: true
   decoding.rescoringlmpath: /workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt

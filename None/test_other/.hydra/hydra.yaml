@@ -43,35 +43,8 @@ hydra:
       - file
     disable_existing_loggers: false
   sweeper:
-    _target_: hydra_plugins.hydra_ax_sweeper.ax_sweeper.AxSweeper
+    _target_: hydra._internal.core_plugins.basic_sweeper.BasicSweeper
     max_batch_size: null
-    ax_config:
-      max_trials: 128
-      early_stop:
-        minimize: true
-        max_epochs_without_improvement: 32
-        epsilon: 1.0e-05
-      experiment:
-        name: ${dataset.gen_subset}
-        objective_name: wer
-        minimize: true
-        parameter_constraints: null
-        outcome_constraints: null
-        status_quo: null
-      client:
-        verbose_logging: false
-        random_seed: null
-      params:
-        decoding.rescoringweight:
-          type: range
-          bounds:
-          - 0.0
-          - 5.0
-        decoding.rescoringwordlenweight:
-          type: range
-          bounds:
-          - -5.0
-          - 5.0
   launcher:
     _target_: hydra._internal.core_plugins.basic_launcher.BasicLauncher
   help:
@@ -131,22 +104,19 @@ hydra:
       '
   output_subdir: .hydra
   overrides:
-    hydra:
-    - hydra/sweeper=ax4
+    hydra: []
     task:
-    - decoding.rescoringweight=0.8149553446097952
-    - decoding.rescoringwordlenweight=-0.21418670094166092
     - task=audio_finetuning
     - task.data=/workspace/librispeech_model/am/fairseq_audio_data2
     - task.labels=ltr
-    - common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec_small_960h.pt
+    - common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
     - decoding.type=kenlm
     - decoding.lexicon=/workspace/librispeech_model/librispeech_lexicon.lst
     - decoding.lmpath=/workspace/librispeech_model/decoder/4-gram.arpa
     - decoding.beam=1500
-    - decoding.lmweight=1.74
-    - decoding.wordscore=0.52
-    - decoding.silweight=0.0
+    - decoding.lmweight=1.57
+    - decoding.wordscore=-0.64
+    - decoding.silweight=-0.15131225610039412
     - decoding.beamthreshold=20.0
     - decoding.beamsizetoken=100
     - decoding.nbest=50
@@ -154,11 +124,17 @@ hydra:
     - dataset.max_tokens=4000000
     - decoding.rescoring=True
     - decoding.rescoringlmpath=/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
+    - decoding.rescoringweight=0.9738779982792846
+    - decoding.rescoringwordlenweight=0.6365406878481483
+    - decoding.generalrescoring=True
+    - decoding.generalrescoringlmpath=/workspace/librispeech_model/decoder/roberta.base/model.pt
+    - decoding.generalrescoringweight=-10.0
+    - common_eval.quiet=false
   job:
-    name: utils
-    override_dirname: common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec_small_960h.pt,dataset.gen_subset=test_other,dataset.max_tokens=4000000,decoding.beam=1500,decoding.beamsizetoken=100,decoding.beamthreshold=20.0,decoding.lexicon=/workspace/librispeech_model/librispeech_lexicon.lst,decoding.lmpath=/workspace/librispeech_model/decoder/4-gram.arpa,decoding.lmweight=1.74,decoding.nbest=50,decoding.rescoring=True,decoding.rescoringlmpath=/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt,decoding.rescoringweight=0.8149553446097952,decoding.rescoringwordlenweight=-0.21418670094166092,decoding.silweight=0.0,decoding.type=kenlm,decoding.wordscore=0.52,task.data=/workspace/librispeech_model/am/fairseq_audio_data2,task.labels=ltr,task=audio_finetuning
-    id: '32'
-    num: 32
+    name: infer
+    override_dirname: common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt,common_eval.quiet=false,dataset.gen_subset=test_other,dataset.max_tokens=4000000,decoding.beam=1500,decoding.beamsizetoken=100,decoding.beamthreshold=20.0,decoding.generalrescoring=True,decoding.generalrescoringlmpath=/workspace/librispeech_model/decoder/roberta.base/model.pt,decoding.generalrescoringweight=-10.0,decoding.lexicon=/workspace/librispeech_model/librispeech_lexicon.lst,decoding.lmpath=/workspace/librispeech_model/decoder/4-gram.arpa,decoding.lmweight=1.57,decoding.nbest=50,decoding.rescoring=True,decoding.rescoringlmpath=/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt,decoding.rescoringweight=0.9738779982792846,decoding.rescoringwordlenweight=0.6365406878481483,decoding.silweight=-0.15131225610039412,decoding.type=kenlm,decoding.wordscore=-0.64,task.data=/workspace/librispeech_model/am/fairseq_audio_data2,task.labels=ltr,task=audio_finetuning
+    id: ???
+    num: ???
     config_name: infer
     env_set: {}
     env_copy: []
