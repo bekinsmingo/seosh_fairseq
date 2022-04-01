@@ -118,21 +118,20 @@ hydra:
     - decoding.wordscore=-0.64
     - decoding.silweight=-0.15131225610039412
     - decoding.beamthreshold=20.0
-    - decoding.beamsizetoken=100
+    - decoding.beamsizetoken=10
     - decoding.nbest=50
+    - decoding.saveresult=true
+    - decoding.saveresultpath=/workspace/decoding_results
     - dataset.gen_subset=test_other
     - dataset.max_tokens=4000000
     - decoding.rescoring=True
     - decoding.rescoringlmpath=/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
-    - decoding.rescoringweight=0.9738779982792846
-    - decoding.rescoringwordlenweight=0.6365406878481483
-    - decoding.generalrescoring=True
-    - decoding.generalrescoringlmpath=/workspace/librispeech_model/decoder/roberta.base/model.pt
-    - decoding.generalrescoringweight=-10.0
+    - decoding.rescoringweight=0.8727702973534363
+    - decoding.rescoringwordlenweight=0.25330422023256993
     - common_eval.quiet=false
   job:
     name: infer
-    override_dirname: common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt,common_eval.quiet=false,dataset.gen_subset=test_other,dataset.max_tokens=4000000,decoding.beam=1500,decoding.beamsizetoken=100,decoding.beamthreshold=20.0,decoding.generalrescoring=True,decoding.generalrescoringlmpath=/workspace/librispeech_model/decoder/roberta.base/model.pt,decoding.generalrescoringweight=-10.0,decoding.lexicon=/workspace/librispeech_model/librispeech_lexicon.lst,decoding.lmpath=/workspace/librispeech_model/decoder/4-gram.arpa,decoding.lmweight=1.57,decoding.nbest=50,decoding.rescoring=True,decoding.rescoringlmpath=/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt,decoding.rescoringweight=0.9738779982792846,decoding.rescoringwordlenweight=0.6365406878481483,decoding.silweight=-0.15131225610039412,decoding.type=kenlm,decoding.wordscore=-0.64,task.data=/workspace/librispeech_model/am/fairseq_audio_data2,task.labels=ltr,task=audio_finetuning
+    override_dirname: common_eval.path=/workspace/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt,common_eval.quiet=false,dataset.gen_subset=test_other,dataset.max_tokens=4000000,decoding.beam=1500,decoding.beamsizetoken=10,decoding.beamthreshold=20.0,decoding.lexicon=/workspace/librispeech_model/librispeech_lexicon.lst,decoding.lmpath=/workspace/librispeech_model/decoder/4-gram.arpa,decoding.lmweight=1.57,decoding.nbest=50,decoding.rescoring=True,decoding.rescoringlmpath=/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt,decoding.rescoringweight=0.8727702973534363,decoding.rescoringwordlenweight=0.25330422023256993,decoding.saveresult=true,decoding.saveresultpath=/workspace/decoding_results,decoding.silweight=-0.15131225610039412,decoding.type=kenlm,decoding.wordscore=-0.64,task.data=/workspace/librispeech_model/am/fairseq_audio_data2,task.labels=ltr,task=audio_finetuning
     id: ???
     num: ???
     config_name: infer

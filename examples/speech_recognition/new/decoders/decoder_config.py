@@ -12,7 +12,7 @@ from fairseq.dataclass.constants import ChoiceEnum
 from omegaconf import MISSING
 
 
-DECODER_CHOICES = ChoiceEnum(["viterbi", "kenlm", "fairseqlm"])
+DECODER_CHOICES = ChoiceEnum(["viterbi", "kenlm", "fairseqlm", "pyctcdecoder"])
 
 
 @dataclass
@@ -93,4 +93,10 @@ class FlashlightDecoderConfig(FairseqDataclass):
     generalrescoringlmpath: Optional[str] = field(
         default=None,
         metadata={"help": ""},
+    )
+    saveresult: bool = field(
+        default=False,
+    )
+    saveresultpath: str = field(
+        default=MISSING,
     )

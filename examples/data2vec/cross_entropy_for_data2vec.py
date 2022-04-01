@@ -300,8 +300,8 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
 
     def compute_loss(self, model, net_output, sample, target_for_mlm, reduce=True):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
-        # target = model.get_targets(sample, net_output)
-        target = target_for_mlm
+        target = model.get_targets(sample, net_output)
+        # target = target_for_mlm
         if target is not None:
             if target.size(1) > lprobs.size(1):
                 target = target[:lprobs.size(0)]
@@ -326,8 +326,8 @@ class CrossEntropyCriterionforData2Vec(FairseqCriterion):
 
     def compute_label_smoothed_loss(self, model, net_output, sample, target_for_mlm, reduce=True):
         lprobs = model.get_normalized_probs(net_output, log_probs=True) # torch.Size([8, 48, 50264])
-        # target = model.get_targets(sample, net_output)
-        target = target_for_mlm
+        target = model.get_targets(sample, net_output)
+        # target = target_for_mlm
         if target is not None:
             if target.size(1) > lprobs.size(1):
                 target = target[:lprobs.size(0)]

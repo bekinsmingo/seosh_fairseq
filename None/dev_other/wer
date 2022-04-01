@@ -1,5 +1,5 @@
-WER: 3.3720656355499727
-err / num_ref_words = 1718 / 50948
+WER: 4.25531914893617
+err / num_ref_words = 2168 / 50948
 
 _name: null
 nbest: 50
@@ -14,12 +14,12 @@ unkweight: -.inf
 silweight: -0.15131225610039412
 lmweight: 1.57
 rescoring: true
-rescoringweight: 2.0
-rescoringwordlenweight: 2.0
+rescoringweight: 4.573832334794027
+rescoringwordlenweight: 5.0
 rescoringlmpath: /workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
-generalrescoring: false
-generalrescoringweight: 0.5387743189930916
-generalrescoringlmpath: null
+generalrescoring: true
+generalrescoringweight: 0.018296004929251097
+generalrescoringlmpath: /workspace/librispeech_model/decoder/roberta.base/model.pt
 type: kenlm
 unique_wer_file: false
 results_path: null

@@ -145,6 +145,7 @@ class KenLMDecoder(BaseDecoder):
     ) -> List[List[Dict[str, torch.LongTensor]]]:
         B, T, N = emissions.size()
         hypos = []
+        
         for b in range(B):
             emissions_ptr = emissions.data_ptr() + 4 * b * emissions.stride(0)
             results = self.decoder.decode(emissions_ptr, T, N)
@@ -168,6 +169,7 @@ class KenLMDecoder(BaseDecoder):
                     for result in nbest_results
                 ]
             )
+        # import pdb; pdb.set_trace()
         return hypos
 
 

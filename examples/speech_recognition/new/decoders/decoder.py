@@ -19,14 +19,14 @@ def Decoder(
 
     if cfg.type == "viterbi":
         from .viterbi_decoder import ViterbiDecoder
-
         return ViterbiDecoder(tgt_dict)
     if cfg.type == "kenlm":
         from .flashlight_decoder import KenLMDecoder
-
         return KenLMDecoder(cfg, tgt_dict)
     if cfg.type == "fairseqlm":
         from .flashlight_decoder import FairseqLMDecoder
-
         return FairseqLMDecoder(cfg, tgt_dict)
+    if cfg.type == "pyctcdecoder":
+        from .pyctcdecoder_decoder import PyCTCDecoder
+        return PyCTCDecoder(cfg, tgt_dict)
     raise NotImplementedError(f"Invalid decoder name: {cfg.name}")

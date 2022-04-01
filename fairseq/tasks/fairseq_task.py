@@ -299,6 +299,8 @@ class FairseqTask(object):
             required_batch_size_multiple=required_batch_size_multiple,
         )
 
+        # import pdb; pdb.set_trace()
+
         # return a reusable, sharded iterator
         epoch_iter = iterators.EpochBatchIterator(
             dataset=dataset,
@@ -313,6 +315,8 @@ class FairseqTask(object):
             skip_remainder_batch=skip_remainder_batch,
             grouped_shuffling=grouped_shuffling,
         )
+
+        # import pdb; pdb.set_trace()
 
         if can_reuse_epoch_itr:
             self.dataset_to_epoch_iter[dataset] = epoch_iter

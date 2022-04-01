@@ -165,6 +165,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
     ):
         super().load_dataset(split, task_cfg, **kwargs)
 
+        # import pdb; pdb.set_trace()
         task_cfg = task_cfg or self.cfg
         assert task_cfg.labels is not None
         text_compression_level = getattr(
@@ -199,6 +200,25 @@ class AudioFinetuningTask(AudioPretrainingTask):
             add_to_input=task_cfg.get("autoregressive", False),
             text_compression_level=text_compression_level,
         )
+
+        '''
+        (Pdb) self.datasets[split].__getitem__(0)
+        {'id': 0, 'source': tensor([ 0.0013,  0.0013,  0.0020,  ..., -0.0057, -0.0051, -0.0057]), 'label': tensor([11,  5,  4, 15,  7, 16, 21, 11,  5, 14,  4, 24, 16,  6,  4, 10,  6,  4,
+                18,  7, 12,  4,  7,  4, 19, 16, 13, 10,  8, 16, 12,  4, 26, 10,  9, 14,
+                4,  8, 20,  4, 15,  7, 16, 21, 11,  4, 20, 16, 15, 15,  4,  8, 20,  4,
+                25,  5, 28,  7,  6, 10,  8,  9,  4, 10,  9, 29, 16, 13,  5, 14,  4,  7,
+                17,  8, 16, 13,  4, 23, 13,  8, 23, 13,  5,  4,  7, 12,  4,  6, 11,  5,
+                4, 20, 13,  5,  9, 19, 11,  4, 19,  7, 15, 15,  4,  8, 16, 13,  4, 15,
+                8, 25,  5,  4,  8, 20,  4,  8, 16, 13,  4,  8, 18,  9,  4, 14, 10, 21,
+                9, 10,  6, 22,  4,  8, 20,  4, 18, 11, 10, 19, 11,  4,  7, 13, 19, 11,
+                10, 24,  7, 15, 14,  4, 13,  7, 22, 12,  6,  8, 26,  5,  4, 10,  9,  4,
+                6, 11,  5,  4, 20, 16, 15, 15,  4, 20, 15, 16, 12, 11,  4,  8, 20,  4,
+                11, 10, 12,  4, 22,  8, 16,  9, 21,  4, 24,  5, 15, 10,  5, 20,  4, 10,
+                9,  4, 11, 10, 12,  4, 10, 17, 23,  8, 13,  6,  7,  9, 19,  5,  4,  7,
+                12,  4,  7,  4, 24, 13, 10,  6, 10, 12, 11,  4,  8, 20, 20, 10, 19,  5,
+                13,  4, 11,  7, 14,  4,  7,  4, 23, 13,  5,  6,  6, 22,  4, 21,  8,  8,
+                14,  4, 12,  6,  8, 19, 26,  4], dtype=torch.int32)}
+        '''
 
     @property
     def target_dictionary(self):

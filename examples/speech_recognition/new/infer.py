@@ -343,16 +343,23 @@ class InferenceProcessor:
 
         # import pdb; pdb.set_trace()
 
+        self.use_fp16 = False
+        self.use_cuda = (not cfg.common.cpu and not torch.cuda.is_available())
+
         models, saved_cfg = self.load_model_ensemble()
         self.models = models
         self.saved_cfg = saved_cfg
         self.tgt_dict = self.task.target_dictionary
 
+        # import pdb; pdb.set_trace()
+
         self.task.load_dataset(
             self.cfg.dataset.gen_subset,
             task_cfg=saved_cfg.task,
         )
+        # cfg.decoding.type = 'pyctcdecoder'
         self.generator = Decoder(cfg.decoding, self.tgt_dict)
+        # import pdb; pdb.set_trace()
         self.gen_timer = StopwatchMeter()
         self.gen_timer_for_rescoring = StopwatchMeter()
         self.wps_meter = TimeMeter()
@@ -377,6 +384,8 @@ class InferenceProcessor:
         self.general_rescoring = cfg.decoding.generalrescoring
         self.general_rescoring_weight = cfg.decoding.generalrescoringweight
 
+        self.save_result = cfg.decoding.saveresult
+        self.save_result_path = cfg.decoding.saveresultpath
 
         # if self.rescoring:
         #     device = 'cuda'
@@ -404,11 +413,15 @@ class InferenceProcessor:
         #     gpt_rescoring_tokenizer.pad_token = gpt_rescoring_tokenizer.eos_token
 
 
+
+
         if self.rescoring : 
 
             # my model
             print('cfg.decoding.rescoringlmpath',cfg.decoding.rescoringlmpath)
             path, checkpoint = os.path.split(cfg.decoding.rescoringlmpath)
+
+            # import pdb; pdb.set_trace()
             overrides = {
                 "task": 'language_modeling',
                 "data": path,
@@ -522,12 +535,17 @@ class InferenceProcessor:
                 merge_shards_with_root("ref.units")
             dist.barrier()
 
-    def optimize_model(self, model: FairseqModel) -> None:
+
+    def optimize_model(self, model: FairseqModel, model_cfg) -> None:
         model.make_generation_fast_()
-        if self.cfg.common.fp16:
+        # model.half()
+        # self.use_fp16 = True
+        if (model_cfg.common.fp16) and (torch.cuda.get_device_capability(0)[0] > 6):
             model.half()
+            self.use_fp16 = True
         if not self.cfg.common.cpu:
             model.cuda()
+        model.eval()
 
     def load_model_ensemble(self) -> Tuple[List[FairseqModel], FairseqDataclass]:
         arg_overrides = ast.literal_eval(self.cfg.common_eval.model_overrides)
@@ -539,11 +557,48 @@ class InferenceProcessor:
             strict=(self.cfg.checkpoint.checkpoint_shard_count == 1),
             num_shards=self.cfg.checkpoint.checkpoint_shard_count,
         )
+        # import pdb; pdb.set_trace()
+        
+        '''
+        (Pdb) self.cfg.common.fp16
+        False
+        (Pdb) saved_cfg.common.fp16
+        True
+
+        (Pdb) models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight.dtype                                                                            
+        torch.float32
+        (Pdb) models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight
+        Parameter containing:
+        tensor([[ 0.0888,  0.2118, -0.1012,  ...,  0.0049,  0.1906,  0.1567],
+                [-0.0044,  0.0175, -0.0861,  ...,  0.0859, -0.0656,  0.0097],
+                [-0.0216, -0.0445, -0.0444,  ..., -0.3267, -0.0875, -0.0676],
+                ...,
+                [-0.0927, -0.1041, -0.1175,  ...,  0.0565, -0.0975, -0.0226],
+                [ 0.1456,  0.1434, -0.0168,  ..., -0.1377,  0.0690, -0.1309],
+                [-0.0152,  0.0212, -0.0604,  ...,  0.1694, -0.1129, -0.1088]],
+            requires_grad=True)
+        (Pdb) models[0].half()
+
+        (Pdb) models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight
+        Parameter containing:
+        tensor([[ 0.0888,  0.2118, -0.1012,  ...,  0.0049,  0.1906,  0.1567],
+                [-0.0044,  0.0175, -0.0861,  ...,  0.0859, -0.0656,  0.0097],
+                [-0.0216, -0.0445, -0.0444,  ..., -0.3267, -0.0875, -0.0676],
+                ...,
+                [-0.0927, -0.1041, -0.1175,  ...,  0.0565, -0.0975, -0.0226],
+                [ 0.1456,  0.1434, -0.0168,  ..., -0.1377,  0.0690, -0.1309],
+                [-0.0152,  0.0212, -0.0604,  ...,  0.1694, -0.1129, -0.1088]],
+            dtype=torch.float16, requires_grad=True)
+        (Pdb) models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight.dtype
+        torch.float16
+        '''
+
         for model in models:
-            self.optimize_model(model)
+            self.optimize_model(model, saved_cfg)
         return models, saved_cfg
 
     def get_dataset_itr(self, disable_iterator_cache: bool = False) -> None:
+        # import pdb; pdb.set_trace()
         return self.task.get_batch_iterator(
             dataset=self.task.dataset(self.cfg.dataset.gen_subset),
             max_tokens=self.cfg.dataset.max_tokens,
@@ -565,6 +620,7 @@ class InferenceProcessor:
         prefix: Optional[str] = None,
         default_log_format: str = "tqdm",
     ) -> BaseProgressBar:
+        # import pdb; pdb.set_trace()
         return progress_bar.progress_bar(
             iterator=self.get_dataset_itr(),
             log_format=self.cfg.common.log_format,
@@ -610,41 +666,121 @@ class InferenceProcessor:
         tgt_words = post_process(tgt_pieces, self.cfg.common_eval.post_process)
         tgt_words = tgt_words.upper() # upper; necessary for LM traind with lower word 
 
-        # 2. Processes hypothesis.
-        hyp_pieces_list = []
-        hyp_words_list = []
-        for i, hypo in enumerate(hypos):
-            hyp_pieces = self.tgt_dict.string(hypo["tokens"].int().cpu())
-            if "words" in hypo:
-                hyp_words = " ".join(hypo["words"])
-            else:
-                hyp_words = post_process(hyp_pieces, self.cfg.common_eval.post_process)
-            hyp_words = hyp_words.upper() # upper; necessary for LM traind with lower word
+        if self.cfg.decoding.type == 'pyctcdecoder':
+            hyp_words = hypos
+            if self.cfg.decoding.results_path is not None:
+                print(f"{hyp_words} ({speaker}-{sid})", file=self.hypo_words_file)
+                print(f"{tgt_words} ({speaker}-{sid})", file=self.ref_words_file)
+            if not self.cfg.common_eval.quiet:
+                logger.info(f"HYPO : {hyp_words}")
+                logger.info(f"TARG : {tgt_words}")
+                logger.info("---------------------")
+            wer = editdistance.eval(hyp_words.split(), tgt_words.split())
+            return wer, len(tgt_words.split()), wer, len(tgt_words.split())
+        else:
+            # 2. Processes hypothesis.
+            hyp_pieces_list = []
+            hyp_words_list = []
+            for i, hypo in enumerate(hypos):
+                hyp_pieces = self.tgt_dict.string(hypo["tokens"].int().cpu())
+                if "words" in hypo:
+                    hyp_words = " ".join(hypo["words"])
+                else:
+                    hyp_words = post_process(hyp_pieces, self.cfg.common_eval.post_process)
+                hyp_words = hyp_words.upper() # upper; necessary for LM traind with lower word
 
-            hyp_pieces_list.append(hyp_pieces)
-            hyp_words_list.append(hyp_words)
-            all_wers.append(editdistance.eval(hyp_words.split(), tgt_words.split()))
+                hyp_pieces_list.append(hyp_pieces)
+                hyp_words_list.append(hyp_words)
+                all_wers.append(editdistance.eval(hyp_words.split(), tgt_words.split()))
 
-        if self.cfg.decoding.results_path is not None:
-            print(f"{hyp_pieces_list[0]} ({speaker}-{sid})", file=self.hypo_units_file)
-            print(f"{hyp_words_list[0]} ({speaker}-{sid})", file=self.hypo_words_file)
-            print(f"{tgt_pieces} ({speaker}-{sid})", file=self.ref_units_file)
-            print(f"{tgt_words} ({speaker}-{sid})", file=self.ref_words_file)
+            if self.cfg.decoding.results_path is not None:
+                print(f"{hyp_pieces_list[0]} ({speaker}-{sid})", file=self.hypo_units_file)
+                print(f"{hyp_words_list[0]} ({speaker}-{sid})", file=self.hypo_words_file)
+                print(f"{tgt_pieces} ({speaker}-{sid})", file=self.ref_units_file)
+                print(f"{tgt_words} ({speaker}-{sid})", file=self.ref_words_file)
 
-        if not self.cfg.common_eval.quiet:
-            logger.info(f"HYPO : {hyp_words_list[0]}")
-            logger.info(f"TARG : {tgt_words}")
-            logger.info("---------------------")
+            if not self.cfg.common_eval.quiet:
+                logger.info(f"HYPO : {hyp_words_list[0]}")
+                logger.info(f"TARG : {tgt_words}")
+                logger.info("---------------------")
 
-        # hyp_words, tgt_words = hyp_words.split(), tgt_words.split()
+            if self.save_result:
+                file_name = os.path.join(self.save_result_path, 'w2v2_' + self.cfg.decoding.type + '_nbest_' + str(self.cfg.decoding.nbest))
+                if self.cfg.decoding.rescoringlmpath:
+                    file_name = file_name + '_rescoring'
+                with open(file_name, "a") as fout:
+                    for i, (hyp, hyp_word, wer) in enumerate(zip(hypos, hyp_words_list, all_wers)):
+                        # sid, hyp['am_score'], hyp['lm_score'], hyp['rescoring_lm_ppl'], hyp['total_score'], wer, hyp_word, tgt_words
+                        # import pdb; pdb.set_trace()
+                        fout.write(
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                            sid,
+                            wer,
+                            hyp['am_score'],
+                            hyp['lm_score'], 
+                            hyp['score'], 
+                            hyp['rescoring_lm_ppl'] if 'rescoring_lm_ppl' in hyp.keys() else 0, 
+                            hyp['total_score'] if 'total_score' in hyp.keys() else 0, 
+                            hyp_word, 
+                            tgt_words)
+                            )
 
-        # import pdb; pdb.set_trace()
+            return all_wers[0], len(tgt_words.split()), min(all_wers), len(tgt_words.split())
 
-        return all_wers[0], len(tgt_words.split()), min(all_wers), len(tgt_words.split())
+    def apply_half(self, t):
+        if t.dtype is torch.float32:
+            return t.to(dtype=torch.half)
+        return t
+
 
     def process_sample(self, sample: Dict[str, Any]) -> None:
 
+        if self.use_fp16:
+            sample = utils.apply_to_sample(self.apply_half, sample)
+
         self.gen_timer.start()
+
+        '''
+        (Pdb) sample.keys()
+        dict_keys(['id', 'net_input', 'target_lengths', 'ntokens', 'target'])
+
+        (Pdb) sample['net_input'].keys()
+        dict_keys(['source', 'padding_mask'])
+
+        (Pdb) type(sample['net_input']['source'])
+        <class 'torch.Tensor'>
+        '''
+
+        '''
+        (Pdb) self.models[0].w2v_encoder.proj.weight.dtype
+        torch.float32
+
+        (Pdb) self.models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight.dtype
+        torch.float32
+
+        (Pdb) self.models[0].half()
+        (Pdb) self.models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight.dtype
+        torch.float16
+        (Pdb) self.models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight
+        Parameter containing:
+        tensor([[ 0.0888,  0.2118, -0.1012,  ...,  0.0049,  0.1906,  0.1567],
+                [-0.0044,  0.0175, -0.0861,  ...,  0.0859, -0.0656,  0.0097],
+                [-0.0216, -0.0445, -0.0444,  ..., -0.3267, -0.0875, -0.0676],
+                ...,
+                [-0.0927, -0.1041, -0.1175,  ...,  0.0565, -0.0975, -0.0226],
+                [ 0.1456,  0.1434, -0.0168,  ..., -0.1377,  0.0690, -0.1309],
+                [-0.0152,  0.0212, -0.0604,  ...,  0.1694, -0.1129, -0.1088]],
+            device='cuda:0', dtype=torch.float16, requires_grad=True)
+
+        (Pdb) sample['net_input']['source'].size()
+        torch.Size([7, 552160])
+
+        when batch size is 32
+        (Pdb) sample['net_input']['source'].size()
+        torch.Size([32, 552160])
+        '''
+
+        # import pdb; pdb.set_trace()
 
         hypos = self.task.inference_step(
             generator=self.generator,
@@ -652,7 +788,25 @@ class InferenceProcessor:
             sample=sample,
         )
 
-        num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
+        # import pdb; pdb.set_trace()
+
+        '''
+        (Pdb) self.models[0](**sample['net_input'])
+        *** RuntimeError: CUDA out of memory. Tried to allocate 638.00 MiB 
+        (GPU 0; 23.88 GiB total capacity; 22.51 GiB already allocated; 274.88 MiB free; 22.75 GiB reserved in total by PyTorch)
+
+        (Pdb) with torch.no_grad(): self.models[0](**sample['net_input'])
+        '''
+
+
+
+        # import pdb; pdb.set_trace()
+
+        if self.cfg.decoding.type == 'pyctcdecoder':
+            # num_generated_tokens = sum(len(h.split()) for h in hypos)
+            num_generated_tokens = sum(len(h) for h in hypos)
+        else:
+            num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
         self.gen_timer.stop(num_generated_tokens)
         self.wps_meter.update(num_generated_tokens)
 
@@ -689,9 +843,10 @@ class InferenceProcessor:
         #         reordered_hypos.append(sorted_beams)
         #     hypos = reordered_hypos
 
-        self.gen_timer_for_rescoring.start()
-
         if self.rescoring:
+
+            self.gen_timer_for_rescoring.start()
+
             for i, nbest_hypos in enumerate(hypos): # B -> nbest 
                 batch = []
                 batch_for_roberta = []
@@ -715,6 +870,9 @@ class InferenceProcessor:
 
                 max_len = len(sorted(batch, key=lambda x: len(x))[-1])
                 ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, self.rescoring_model, self.rescoring_dict, max_len)
+
+                # import pdb; pdb.set_trace()
+
                 if self.general_rescoring:
                     general_ppls, general_loss_batch, general_nwords_batch = predict_batch_for_rescoring_roberta(batch_for_roberta, self.general_rescoring_model, self.general_rescoring_dict)
 
@@ -754,11 +912,13 @@ class InferenceProcessor:
                         + self.rescoring_word_len_weight * n_th_hypo['wl_len'] 
                         )
 
+                # import pdb; pdb.set_trace()
+
                 # hypos[i] = sorted(nbest_hypos, key=lambda x: -x["rescoring_lm_ppl"])
                 hypos[i] = sorted(nbest_hypos, key=lambda x: -x["total_score"])
 
-        num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
-        self.gen_timer_for_rescoring.stop(num_generated_tokens)
+            num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
+            self.gen_timer_for_rescoring.stop(num_generated_tokens)
 
         for batch_id, sample_id in enumerate(sample["id"].tolist()):
             errs, length, best_errs, best_length = self.process_sentence(
@@ -787,18 +947,19 @@ class InferenceProcessor:
             "sentences per second, %.2f tokens per second)",
             self.num_sentences,
             self.gen_timer.n,
-            (self.gen_timer.sum + self.gen_timer_for_rescoring.sum),
-            self.num_sentences / ((self.gen_timer.sum + self.gen_timer_for_rescoring.sum) + 1e-6),
-            1.0 / ((self.gen_timer.avg + self.gen_timer_for_rescoring.avg)/2 + 1e-6),
+            (self.gen_timer.sum + self.gen_timer_for_rescoring.sum) if self.rescoring else self.gen_timer.sum,
+            self.num_sentences / ((self.gen_timer.sum + self.gen_timer_for_rescoring.sum) + 1e-6) if self.rescoring else self.num_sentences / (self.gen_timer.sum + 1e-6),
+            1.0 / ((self.gen_timer.avg + self.gen_timer_for_rescoring.avg)/2 + 1e-6) if self.rescoring else 1.0 / (self.gen_timer.avg + 1e-6),
         )
         logger.info(
             "%.1fs for Beam Search",
             self.gen_timer.sum
         )
-        logger.info(
-            "%.1fs for Rescoring",
-            self.gen_timer_for_rescoring.sum
-        )
+        if self.rescoring:
+            logger.info(
+                "%.1fs for Rescoring",
+                self.gen_timer_for_rescoring.sum
+            )
 
 
 def parse_wer(wer_file: Path) -> float:
@@ -888,6 +1049,7 @@ def main(cfg: InferConfig) -> float:
 
 @hydra.main(config_path=config_path, config_name="infer")
 def hydra_main(cfg: InferConfig) -> Union[float, Tuple[float, Optional[float]]]:
+    # import pdb; pdb.set_trace()
     container = OmegaConf.to_container(cfg, resolve=True, enum_to_str=True)
     cfg = OmegaConf.create(container)
     OmegaConf.set_struct(cfg, True)
@@ -942,6 +1104,8 @@ def cli_main() -> None:
         if is_dataclass(InferConfig.__dataclass_fields__[k].type):
             v = InferConfig.__dataclass_fields__[k].default
             cs.store(name=k, node=v)
+
+    # import pdb; pdb.set_trace()
 
     hydra_main()  # pylint: disable=no-value-for-parameter
 

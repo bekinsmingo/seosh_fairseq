@@ -586,6 +586,8 @@ def main(args, task=None, model_state=None):
 
     logger.info("| decoding with criterion {}".format(args.criterion))
 
+    # import pdb; pdb.set_trace()
+
     task = tasks.setup_task(args)
 
     # Load ensemble

@@ -1,4 +1,6 @@
-- decoding.generalrescoringweight=-6.298213098198175
+- decoding.rescoringweight=5.0
+- decoding.rescoringwordlenweight=-5.0
+- decoding.generalrescoringweight=25.409171629762533
 - task=audio_finetuning
 - task.data=/workspace/librispeech_model/am/fairseq_audio_data2
 - task.labels=ltr
@@ -17,3 +19,5 @@
 - dataset.max_tokens=4000000
 - decoding.rescoring=True
 - decoding.rescoringlmpath=/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
+- decoding.generalrescoring=True
+- decoding.generalrescoringlmpath=/workspace/librispeech_model/decoder/roberta.base/model.pt
