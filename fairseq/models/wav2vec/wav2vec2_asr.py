@@ -719,7 +719,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
         inner_states = [x]
 
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         '''
         (Pdb) prev_output_tokens.eq(self.padding_idx)
         tensor([[False, False, False,  ...,  True,  True,  True],

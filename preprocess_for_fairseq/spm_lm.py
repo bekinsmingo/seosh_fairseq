@@ -52,7 +52,8 @@ if __name__ == "__main__":
     print("There is no sentence piece vocab (model), lets started from the bottom ... \n", flush=True)
 
 
-    decoder_path = os.path.join(args.model_dst, "decoder")
+    #decoder_path = os.path.join(args.model_dst, "decoder")
+    decoder_path = args.model_dst
     os.makedirs(decoder_path, exist_ok=True)
 
     num_wordpieces = args.wp

@@ -86,7 +86,9 @@ def main():
         # ]
 
         outputs = [
-            stack.enter_context(open(os.path.join(args.model_dst,"decoder","wordpiece_"+input.split("/")[-1]), "w", encoding="utf-8"))
+            #stack.enter_context(open(os.path.join(args.model_dst,"decoder","wordpiece_"+input.split("/")[-1]), "w", encoding="utf-8"))
+            stack.enter_context(open(os.path.join(args.model_dst,"wordpiece_"+input.split("/")[-1]), "w", encoding="utf-8"))
+
             if input != "-"
             else sys.stdin
             for input in args.inputs
