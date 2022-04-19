@@ -229,6 +229,14 @@ def add_wav2vec_asr_args(parser):
         type=float,
         help="probability of dropping a layer in wav2vec 2.0",
     )
+    parser.add_argument(
+        "--max-positions",
+        type=int,
+        help="Max input positions to be used in the conformer encoder in wav2vec 2.0",
+    )
+
+    parser.add_argument("--encoder-proj", action="store_true")
+
     parser.add_argument("--w2v-args", default=None)
 
 
@@ -509,13 +517,7 @@ class XMTransformerModel(FairseqEncoderDecoderModel):
     @classmethod
     def build_encoder(cls, args):
         _args = copy.deepcopy(args)
-        # import pdb;pdb.set_trace()
-        if not args.adaptor_proj:  # V0 arch
-            # print('args.w2v_path',args.w2v_path)
-            # setattr(args,'w2v_path','/workspace/s2st/xlsr/xlsr2_300m.pt')
-            # print('args.w2v_path',args.w2v_path)
-            # import pdb;pdb.set_trace()
-            
+        if not args.adaptor_proj and not args.encoder_proj:  # V0 arch
             state = checkpoint_utils.load_checkpoint_to_cpu(args.w2v_path)
             if state.get("cfg") is not None:
                 encoder_embed_dim = state["cfg"]._content["model"]["encoder_embed_dim"]
@@ -534,12 +536,11 @@ class XMTransformerModel(FairseqEncoderDecoderModel):
     @classmethod
     def build_decoder(cls, args, task, embed_tokens):
         _args = copy.deepcopy(args)
-        if args.adaptor_proj:  # not V0 arch
+        if args.adaptor_proj or args.encoder_proj:  # not V0 arch
             _args.encoder_embed_dim = _args.decoder_embed_dim
         _args.dropout = args.decoder_dropout
         _args.attention_dropout = args.decoder_attention_dropout
         _args.activation_dropout = args.decoder_activation_dropout
-        _args.max_target_positions = 1024
 
         decoder = TransformerDecoder(_args, task.target_dictionary, embed_tokens)
         decoder = cls.maybe_load_pretrained(
@@ -598,7 +599,6 @@ class XMTransformerModel(FairseqEncoderDecoderModel):
     def upgrade_state_dict(self, state_dict):
         for k, _ in state_dict.items():
             if "adaptor.layers" in state_dict:
-                print(k)
                 new = k.replace("adaptor.layers", "adaptor_layers")
                 state_dict[new] = state_dict[k]
                 del state_dict[k]
@@ -612,6 +612,7 @@ def set_default_w2v_encoder_args(args):
     args.dropout = getattr(args, "dropout", 0)
     args.attention_dropout = getattr(args, "attention_dropout", 0)
     args.activation_dropout = getattr(args, "activation_dropout", 0)
+    args.encoder_proj = getattr(args, "encoder_proj", False)
 
     args.mask_length = getattr(args, "mask_length", 10)
     args.mask_prob = getattr(args, "mask_prob", 0.5)
@@ -685,6 +686,7 @@ def set_default_general_args(args):
     args.checkpoint_activations = getattr(args, "checkpoint_activations", False)
     args.offload_activations = getattr(args, "offload_activations", False)
     args.min_params_to_wrap = getattr(args, "min_params_to_wrap", int(1e8))
+    args.max_positions = getattr(args, "max_positions", 3000)
 
 
 @register_model_architecture(model_name="xm_transformer", arch_name="xm_transformer")
