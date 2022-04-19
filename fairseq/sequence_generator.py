@@ -355,7 +355,7 @@ class SequenceGenerator(nn.Module):
                     self.temperature,
                 )
 
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
 
             '''
             (Pdb) print(step); tokens[:, : step + 1]

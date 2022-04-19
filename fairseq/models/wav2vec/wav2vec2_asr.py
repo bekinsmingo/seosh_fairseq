@@ -670,6 +670,8 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 - the decoder's output of shape `(batch, tgt_len, vocab)`
                 - a dictionary with any model-specific outputs
         """
+        # import pdb; pdb.set_trace()
+        # if type(prev_output_tokens)==list:
         prev_output_tokens = prev_output_tokens.long()
         x, extra = self.extract_features(
             prev_output_tokens, encoder_out, incremental_state

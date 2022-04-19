@@ -20,6 +20,7 @@ task:
   data: ???
   normalize: true
   labels: ltr
+  eval_wer_post_process: letter
 
 dataset:
   num_workers: 6

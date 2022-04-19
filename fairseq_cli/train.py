@@ -404,7 +404,7 @@ def validate_and_save(
         )
     )
 
-    # 아하 validation을 안해서그러네 ㅅㅂ validate_interval_updates도 설정해줘야함
+    # 아하 validation을 안해서그러네 validate_interval_updates도 설정해줘야함
     do_validate = (
         (
             (not end_of_epoch and do_save)  # validate during mid-epoch saves
@@ -456,6 +456,7 @@ def validate(
 
     trainer.begin_valid_epoch(epoch_itr.epoch)
     valid_losses = []
+    
     for subset_idx, subset in enumerate(subsets):
         logger.info('begin validation on "{}" subset'.format(subset))
 

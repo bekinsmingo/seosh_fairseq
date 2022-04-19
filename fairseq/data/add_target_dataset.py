@@ -56,6 +56,7 @@ class AddTargetDataset(BaseWrapperDataset):
         if len(collated) == 0:
             return collated
         indices = set(collated["id"].tolist())
+
         if self.add_bos_and_eos_to_input:
             target = [torch.cat((torch.LongTensor([self.bos]), s['label'],torch.LongTensor([self.eos]))) for s in samples if s["id"] in indices]
         else:
@@ -71,16 +72,21 @@ class AddTargetDataset(BaseWrapperDataset):
             collated["target_lengths"] = torch.LongTensor([len(t) for t in target])
             target = data_utils.collate_tokens(target, pad_idx=self.pad, left_pad=False)
             collated["ntokens"] = collated["target_lengths"].sum().item()
-            if getattr(collated["net_input"], "prev_output_tokens", None):
+            # if getattr(collated["net_input"], "prev_output_tokens", None):
+            if 'prev_output_tokens' in collated["net_input"].keys():
                 collated["net_input"]["prev_output_tokens"] = data_utils.collate_tokens(
                     collated["net_input"]["prev_output_tokens"],
                     pad_idx=self.pad,
                     left_pad=False,
                 )
+                # import pdb; pdb.set_trace()
         else:
             collated["ntokens"] = sum([len(t) for t in target])
 
+        # import pdb; pdb.set_trace()
+
         collated["target"] = target
+        
         return collated
 
     def filter_indices_by_size(self, indices, max_sizes):
