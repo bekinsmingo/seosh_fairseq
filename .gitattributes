@@ -1,2 +1,1 @@
-fairseq_libri_data_example filter=lfs diff=lfs merge=lfs -text
 
