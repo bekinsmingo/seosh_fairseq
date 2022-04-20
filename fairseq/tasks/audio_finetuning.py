@@ -284,6 +284,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
                 self.cfg.eval_wer_post_process,
                 escape_unk=True,
             )
+            #import pdb; pdb.set_trace()
             if self.tokenizer:
                 s = self.tokenizer.decode(s)
             return s
@@ -297,6 +298,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
             ref = decode(
                 utils.strip_pad(sample["target"][i], self.target_dictionary.pad()),
             )
+            #import pdb; pdb.set_trace()
             num_char_errors += editdistance.eval(hyp, ref)
             num_chars += len(ref)
             hyp_words = hyp.split()
