@@ -319,6 +319,28 @@ class Wav2Vec2Seq2SeqConfig(Wav2Vec2AsrConfig):
     )
     autoregressive: bool = II("task.autoregressive")
 
+    ## added
+    # use_pretrained_bart_decoder: bool = field(
+    #     default=False,
+    #     metadata={"help": "use pretrained BART decoder"},
+    # )
+    # bart_path: str = field(
+    #     default=None, metadata={"help": "path to BART model"}
+    # )
+    load_pretrained_decoder_from: Optional[str] = field(
+        default=None, metadata={"help": "model to take decoder weights from (for initialization)"}
+    )
+
+
+def need_finetuning(ft_params, param_name):
+    if ft_params == "all":
+        return True
+    ft_params_list = ft_params.split(",")
+    for ft_param in ft_params_list:
+        if ft_param in param_name:
+            return True
+    return False
+
 
 @register_model("wav2vec_seq2seq", dataclass=Wav2Vec2Seq2SeqConfig)
 class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
@@ -358,7 +380,50 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
     @classmethod
     def build_decoder(cls, cfg: Wav2Vec2Seq2SeqConfig, tgt_dict, embed_tokens):
-        return TransformerDecoder(cfg, tgt_dict, embed_tokens)
+        # import pdb; pdb.set_trace()
+        if cfg.load_pretrained_decoder_from:
+            _cfg = copy.deepcopy(cfg)
+            # if cfg.adaptor_proj or cfg.encoder_embed_dim:  # not V0 arch
+            _cfg.encoder_embed_dim = _cfg.decoder_embed_dim
+            _cfg.dropout = cfg.decoder_dropout
+            _cfg.attention_dropout = cfg.decoder_attention_dropout
+            _cfg.activation_dropout = cfg.decoder_activation_dropout
+
+            # from fairseq.models.transformer import TransformerDecoder
+            decoder = TransformerDecoder(_cfg, tgt_dict, embed_tokens)
+
+            try:
+                decoder = checkpoint_utils.load_pretrained_component_from_model(component=decoder, checkpoint=cfg.load_pretrained_decoder_from)
+            except RuntimeError as e:
+                '''
+                *** RuntimeError: Error(s) in loading state_dict for TransformerDecoder:
+                        Missing key(s) in state_dict: "embed_out", "embed_positions._float_tensor". 
+                        Unexpected key(s) in state_dict: "version", "layernorm_embedding.weight", "layernorm_embedding.bias", "embed_positions.weight". 
+                        size mismatch for embed_tokens.weight: copying a param with shape torch.Size([51201, 768]) from checkpoint, the shape in current model is torch.Size([10001, 768]).
+                '''
+                logger.warning(e)
+                # decoder = checkpoint_utils.load_pretrained_component_from_model(component=decoder, checkpoint=cfg.load_pretrained_decoder_from, strict=False)
+
+                from collections import OrderedDict
+                state = checkpoint_utils.load_checkpoint_to_cpu(cfg.load_pretrained_decoder_from)
+                component_type = "decoder"
+                component_state_dict = OrderedDict()
+                for key in state["model"].keys():
+                    if key.startswith(component_type):
+                        # encoder.input_layers.0.0.weight --> input_layers.0.0.weight
+                        component_subkey = key[len(component_type) + 1 :]
+                        component_state_dict[component_subkey] = state["model"][key]
+
+                component_state_dict['embed_tokens.weight'] = decoder.embed_tokens.weight
+
+                decoder.load_state_dict(component_state_dict, strict=False)
+
+            for k, p in decoder.named_parameters():
+                # p.requires_grad = need_finetuning(cfg.finetune_decoder_params, k)
+                p.requires_grad = True
+            return decoder
+        else:
+            return TransformerDecoder(cfg, tgt_dict, embed_tokens)
 
     def forward(self, **kwargs):
         encoder_out = self.encoder(**kwargs)
