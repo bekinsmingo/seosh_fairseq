@@ -64,9 +64,10 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     reduction=reduction,
                     zero_infinity=True,
                 )
-                * self.ctc_weight
             )
-        loss += ctc_loss
+            
+        # interpolation
+        loss = loss * (1-self.ctc_weight) + ctc_loss * self.ctc_weight
 
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]

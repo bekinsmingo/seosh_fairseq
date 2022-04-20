@@ -32,6 +32,10 @@ from fairseq.models.wav2vec.wav2vec2 import MASKING_DISTRIBUTION_CHOICES
 from fairseq.modules import LayerNorm, PositionalEmbedding, TransformerDecoderLayer
 from fairseq.tasks import FairseqTask
 
+from typing import Dict, List, Optional, Tuple
+from torch import Tensor
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -319,6 +323,7 @@ class Wav2Vec2Seq2SeqConfig(Wav2Vec2AsrConfig):
     )
     autoregressive: bool = II("task.autoregressive")
 
+
     ## added
     # use_pretrained_bart_decoder: bool = field(
     #     default=False,
@@ -330,6 +335,8 @@ class Wav2Vec2Seq2SeqConfig(Wav2Vec2AsrConfig):
     load_pretrained_decoder_from: Optional[str] = field(
         default=None, metadata={"help": "model to take decoder weights from (for initialization)"}
     )
+
+    # ctc_weight: float = II("criterion.ctc_weight")
 
 
 def need_finetuning(ft_params, param_name):
@@ -369,14 +376,14 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
         # import pdb; pdb.set_trace()
 
-        encoder = cls.build_encoder(cfg)
+        encoder = cls.build_encoder(cfg, tgt_dict)
         decoder = cls.build_decoder(cfg, tgt_dict, decoder_embed_tokens)
 
         return Wav2Vec2Seq2SeqModel(encoder, decoder)
 
     @classmethod
-    def build_encoder(cls, cfg: Wav2Vec2AsrConfig):
-        return Wav2VecEncoder(cfg)
+    def build_encoder(cls, cfg: Wav2Vec2AsrConfig, tgt_dict):
+        return Wav2VecEncoder(cfg, ctc_proj_dim = len(tgt_dict))
 
     @classmethod
     def build_decoder(cls, cfg: Wav2Vec2Seq2SeqConfig, tgt_dict, embed_tokens):
@@ -428,16 +435,49 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
     def forward(self, **kwargs):
         encoder_out = self.encoder(**kwargs)
         decoder_out = self.decoder(encoder_out=encoder_out, **kwargs)
-        return decoder_out
+        # import pdb; pdb.set_trace()
+        # return decoder_out
+        return (decoder_out[0], decoder_out[1], encoder_out)
 
+    def get_ctc_target(self, sample: Optional[Dict[str, Tensor]]):
+        return sample["target"], sample["target_lengths"]
+
+    def get_ctc_output(
+        self,
+        net_output: Tuple[Tensor, Optional[Dict[str, List[Optional[Tensor]]]]],
+        sample: Optional[Dict[str, Tensor]],
+    ):
+        # import pdb; pdb.set_trace()
+        # encoder_out = net_output[1]["encoder_out"]["encoder_out"][0]
+        encoder_out = net_output[2]["encoder_out"]
+        logits = self.encoder.ctc_proj(encoder_out)  # T x B x C
+        '''
+        (Pdb) logits.size()
+        torch.Size([538, 7, 10001])
+        (Pdb) encoder_out.size()
+        torch.Size([538, 7, 768])
+        '''
+        out = utils.log_softmax(logits.float(), dim=-1)
+        # padding_mask = net_output[1]["encoder_out"]["encoder_padding_mask"]
+        padding_mask = net_output[2]["padding_mask"]
+        lens = out.new_full((out.shape[1],), out.shape[0]).long()
+        # import pdb; pdb.set_trace()
+        if padding_mask is not None :
+            if len(padding_mask) > 0:
+                lens -= padding_mask[0].sum(dim=-1)
+        # import pdb; pdb.set_trace()
+        return out, lens
+        
     def upgrade_state_dict_named(self, state_dict, name):
         super().upgrade_state_dict_named(state_dict, name)
         return state_dict
 
 
 class Wav2VecEncoder(FairseqEncoder):
-    def __init__(self, cfg: Wav2Vec2AsrConfig, output_size=None):
+    def __init__(self, cfg: Wav2Vec2AsrConfig, output_size=None, ctc_proj_dim=None):
         self.apply_mask = cfg.apply_mask
+
+        # import pdb; pdb.set_trace()
 
         arg_overrides = {
             "dropout": cfg.dropout,
@@ -530,6 +570,12 @@ class Wav2VecEncoder(FairseqEncoder):
         if targ_d is not None:
             self.proj = Linear(d, targ_d)
 
+        self.ctc_proj = nn.Linear(cfg.encoder_embed_dim, ctc_proj_dim)
+
+        # self.ctc_proj = None
+        # if cfg.ctc_weight > 0.0:
+        #     self.ctc_proj = nn.Linear(cfg.encoder_embed_dim, ctc_proj_dim)
+
     def load_model_weights(self, state, model, cfg):
         if cfg.ddp_backend == "fully_sharded":
             from fairseq.distributed import FullyShardedDataParallel
@@ -569,6 +615,8 @@ class Wav2VecEncoder(FairseqEncoder):
         self.num_updates = num_updates
 
     def forward(self, source, padding_mask, **kwargs):
+
+        # import pdb; pdb.set_trace()
 
         w2v_args = {
             "source": source,
