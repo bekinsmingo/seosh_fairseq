@@ -278,8 +278,6 @@ class AudioFinetuningTask(AudioPretrainingTask):
     def _inference_with_wer(self, generator, sample, model):
         import editdistance
 
-        # import pdb; pdb.set_trace()
-
         def decode(toks):
             s = self.target_dictionary.string(
                 toks.int().cpu(),
@@ -293,8 +291,9 @@ class AudioFinetuningTask(AudioPretrainingTask):
         num_word_errors, num_char_errors = 0, 0
         num_chars, num_words = 0, 0
         gen_out = self.inference_step(generator, [model], sample, None)
+        
         for i in range(len(gen_out)):
-            hyp = decode(gen_out[i][0]["tokens"])
+            hyp = decode(gen_out[i][0]["tokens"]) # use only best beam 
             ref = decode(
                 utils.strip_pad(sample["target"][i], self.target_dictionary.pad()),
             )
