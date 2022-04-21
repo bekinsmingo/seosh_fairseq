@@ -65,6 +65,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     zero_infinity=True,
                 )
             )
+
+        # import pdb; pdb.set_trace()
             
         # interpolation
         loss = loss * (1-self.ctc_weight) + ctc_loss * self.ctc_weight
