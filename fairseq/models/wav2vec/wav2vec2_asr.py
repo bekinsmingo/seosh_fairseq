@@ -469,7 +469,12 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
         return state_dict
 
 
-@register_model("wav2vec_transducer", dataclass=Wav2Vec2CtcConfig)
+
+@dataclass
+class Wav2Vec2TransducerConfig(Wav2Vec2AsrConfig):
+    blank_weight: float = 0 # tmp
+
+@register_model("wav2vec_transducer", dataclass=Wav2Vec2TransducerConfig)
 class Wav2Vec2Transducer(BaseFairseqModel):
     def __init__(self, cfg: Wav2Vec2CtcConfig, task, w2v_encoder: BaseFairseqModel, rnnt_model):
         super().__init__()
@@ -503,7 +508,7 @@ class Wav2Vec2Transducer(BaseFairseqModel):
             transformer_max_memory_size=0,
             transformer_weight_init_scale_strategy="depthwise",
             transformer_tanh_on_mem=True,
-            pretrained_encoder=w2v_encoder,
+            pretrained_encoder=w2v_encoder, # if it exists, dont care above factors
         )
 
         predictor = _Predictor(
