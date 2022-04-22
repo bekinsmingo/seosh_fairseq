@@ -85,7 +85,7 @@ class RNNTCriterion(FairseqCriterion):
 
             with torch.no_grad():
                 for bsz, (t, enc_out) in enumerate(zip(targets, encoder_output)):
-                    hyps = self.decoder._search(enc_out, None, 5)
+                    hyps = self.decoder._search(enc_out, None, 1)
                     hyp_str = post_process_hypos(hyps, self.tgt_dict)[0][0]
 
                     p = (t != self.task.target_dictionary.pad()) & (
@@ -112,14 +112,10 @@ class RNNTCriterion(FairseqCriterion):
                     w_errs += dist
                     w_len += len(targ_words)
 
-                # targets.size(0)
-                # import pdb; pdb.set_trace()
-
                 logging_output["w_errors"] = w_errs
                 logging_output["w_total"] = w_len
                 logging_output["c_errors"] = c_err
                 logging_output["c_total"] = c_len
-
 
         return loss, sample_size, logging_output
 
