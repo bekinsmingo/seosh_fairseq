@@ -58,6 +58,7 @@ class RNNTCriterion(FairseqCriterion):
         targets = sample['target']
         target_lengths = sample['target_lengths'].type('torch.IntTensor').cuda()
 
+        # import pdb; pdb.set_trace()
         encoder_output, output, src_lengths = model(sample)
         src_lengths = src_lengths.type('torch.IntTensor').cuda()
 
@@ -85,9 +86,14 @@ class RNNTCriterion(FairseqCriterion):
 
             with torch.no_grad():
                 for bsz, (t, enc_out) in enumerate(zip(targets, encoder_output)):
-                    hyps = self.decoder._search(enc_out, None, 1)
+                    enc_out = enc_out.unsqueeze(0)
+
+                    # hyps = self.decoder._search(enc_out, None, 1)
+                    hyps = self.decoder._search(enc_out, None, 5)
                     hyp_str = post_process_hypos(hyps, self.tgt_dict)[0][0]
 
+                    # import pdb; pdb.set_trace()
+                    
                     p = (t != self.task.target_dictionary.pad()) & (
                         t != self.task.target_dictionary.eos()
                     )
@@ -100,7 +106,7 @@ class RNNTCriterion(FairseqCriterion):
                     targ_words = post_process(targ_units, self.post_process).split()
 
                     # pred
-                    pred_units_arr = hyps[0][-1] # best beam's indices
+                    pred_units_arr = hyps[0][0] # best beam's indices
                     pred_words = post_process(hyp_str, self.post_process).split() # best beam's word lists
 
                     # CER
@@ -111,6 +117,8 @@ class RNNTCriterion(FairseqCriterion):
                     dist = editdistance.eval(pred_words, targ_words)
                     w_errs += dist
                     w_len += len(targ_words)
+
+                    # import pdb; pdb.set_trace()
 
                 logging_output["w_errors"] = w_errs
                 logging_output["w_total"] = w_len

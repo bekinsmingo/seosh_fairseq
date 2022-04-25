@@ -24,6 +24,8 @@ from . import register_task
 from .. import utils
 from ..logging import metrics
 
+from fairseq.optim.amp_optimizer import AMPOptimizer
+
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
     ):
         super().__init__(cfg)
         self.blank_symbol = "<s>"
+        self.eval_wer_post_process = cfg.eval_wer_post_process
 
         self.state.add_factory("target_dictionary", self.load_target_dictionary)
 
@@ -225,6 +228,20 @@ class AudioFinetuningTask(AudioPretrainingTask):
         """Return the :class:`~fairseq.data.Dictionary` for the language
         model."""
         return self.state.target_dictionary
+
+    def train_step(
+        self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+    ):
+        model.train()
+        model.set_num_updates(update_num)
+        with torch.autograd.profiler.record_function("forward"):
+            with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
+                loss, sample_size, logging_output = criterion(model, sample)
+        if ignore_grad:
+            loss *= 0
+        with torch.autograd.profiler.record_function("backward"):
+            optimizer.backward(loss)
+        return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)

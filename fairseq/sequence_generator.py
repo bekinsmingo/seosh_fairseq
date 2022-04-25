@@ -135,6 +135,7 @@ class SequenceGenerator(nn.Module):
             bos_token (int, optional): beginning of sentence token
                 (default: self.eos)
         """
+        # let's diable for mwer training # 22. 04. 25 or use _generate function 
         return self._generate(sample, prefix_tokens, bos_token=bos_token)
 
     # TODO(myleott): unused, deprecate after pytorch-translate migration
