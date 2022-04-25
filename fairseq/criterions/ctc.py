@@ -173,8 +173,6 @@ class CtcCriterion(FairseqCriterion):
         tensor([174, 221, 240, 156, 199, 142, 189, 193], device='cuda:0')
         '''
 
-        import pdb; pdb.set_trace()
-
         with torch.backends.cudnn.flags(enabled=False):
             loss = F.ctc_loss(
                 lprobs,

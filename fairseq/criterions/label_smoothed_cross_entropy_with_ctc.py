@@ -183,8 +183,10 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
         eps_for_reinforce = np.finfo(np.float32).eps.item()
 
-        # with torch.set_grad_enabled(True): batch_nbest_lists = self.task.sequence_generator.generate([model], sample, prefix_tokens=None, constraints=None)
-        with torch.set_grad_enabled(True): batch_nbest_lists = self.task.sequence_generator._generate(sample, prefix_tokens=None)
+        # with torch.set_grad_enabled(True): 
+        #     batch_nbest_lists = self.task.sequence_generator.generate([model], sample, prefix_tokens=None, constraints=None)
+        with torch.set_grad_enabled(True): 
+            batch_nbest_lists = self.task.sequence_generator._generate(sample, prefix_tokens=None)
 
         mwer_loss = []
         for i, nbest_lists in enumerate(batch_nbest_lists):

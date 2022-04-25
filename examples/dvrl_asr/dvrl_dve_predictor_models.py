@@ -41,23 +41,20 @@ from fairseq.models.wav2vec_asr import (
     Wav2Vec2AsrConfig,
     Wav2VecEncoder,
     Wav2VecCtc,
+    Wav2Vec2CtcConfig
 )
 
 from torch.distributions import Categorical
 
 
 @dataclass
-class Wav2Vec2CtcConfig(Wav2Vec2AsrConfig):
+class DVRLCtcConfig(Wav2Vec2CtcConfig):
     ## configs for w2v_ctc (refer to Wav2Vec2AsrConfig)
-    blank_weight: float = 0
-    blank_mode: str = "add"
+    tmp: float = 0
 
-    ## configs for DVE
-
-
-@register_model("dvrl_asr", dataclass=Wav2Vec2CtcConfig)
+@register_model("dvrl_asr", dataclass=DVRLCtcConfig)
 class DVRLforASR(BaseFairseqModel):
-    def __init__(self, cfg: Wav2Vec2CtcConfig, w2v_ctc, dve, sampler):
+    def __init__(self, cfg: DVRLCtcConfig, w2v_ctc, dve, sampler):
         super().__init__()
         self.cfg = cfg
         self.w2v_ctc = w2v_ctc
@@ -66,7 +63,7 @@ class DVRLforASR(BaseFairseqModel):
 
 
     @classmethod
-    def build_model(cls, cfg: Wav2Vec2CtcConfig, task: FairseqTask):
+    def build_model(cls, cfg: DVRLCtcConfig, task: FairseqTask):
         """Build a new model instance."""
         w2v_ctc = cls.build_asr_model(cfg, task)
         dve = cls.build_dve_model(cfg, task)
