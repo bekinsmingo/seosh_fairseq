@@ -17,6 +17,9 @@ from fairseq.criterions.label_smoothed_cross_entropy import (
 )
 from fairseq.data.data_utils import lengths_to_mask
 import numpy as np
+import editdistance
+from fairseq.data.data_utils import post_process
+from fairseq.logging.meters import safe_round
 
 @dataclass
 class LabelSmoothedCrossEntropyWithCtcCriterionConfig(
@@ -48,6 +51,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         self.ctc_weight = ctc_weight
         self.mwer_training = mwer_training
         self.mwer_training_updates = mwer_training_updates
+        self.post_process = self.task.eval_wer_post_process
+        self.blank_idx = 0
 
     def forward(self, model, sample,reduce=True):
         net_output = model(**sample["net_input"])
@@ -94,18 +99,82 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
         }
+
         if self.report_accuracy:
             n_correct, total = self.compute_accuracy(model, net_output, sample)
             logging_output["n_correct"] = utils.item(n_correct.data)
             logging_output["total"] = utils.item(total.data)
+
+        if (not model.training) and (self.ctc_weight > 0.0):
+            if "src_lengths" in sample["net_input"]:
+                input_lengths = sample["net_input"]["src_lengths"]
+            else:
+                # import pdb; pdb.set_trace()
+                if net_output[-1]["padding_mask"] is not None:
+                    non_padding_mask = ~net_output[-1]["padding_mask"]
+                    input_lengths = non_padding_mask.long().sum(-1)
+                else:
+                    input_lengths = ctc_lprobs.new_full(
+                        (ctc_lprobs.size(1),), ctc_lprobs.size(0), dtype=torch.long
+                    )
+
+            with torch.no_grad():
+                lprobs_t = ctc_lprobs.transpose(0, 1).float().contiguous().cpu()
+
+                c_err = 0
+                c_len = 0
+                w_errs = 0
+                w_len = 0
+                wv_errs = 0
+                for lp, t, inp_l in zip(
+                    lprobs_t,
+                    sample["target_label"]
+                    if "target_label" in sample
+                    else sample["target"],
+                    input_lengths,
+                ):
+                    ## only support greedy deconding, not ngram decoding
+                    lp = lp[:inp_l].unsqueeze(0)
+
+                    p = (t != self.task.target_dictionary.pad()) & (
+                        t != self.task.target_dictionary.eos()
+                    )
+                    targ = t[p]
+                    targ_units = self.task.target_dictionary.string(targ)
+                    targ_units_arr = targ.tolist()
+
+                    toks = lp.argmax(dim=-1).unique_consecutive()
+                    pred_units_arr = toks[toks != self.blank_idx].tolist()
+
+                    c_err += editdistance.eval(pred_units_arr, targ_units_arr)
+                    c_len += len(targ_units_arr)
+
+                    targ_words = post_process(targ_units, self.post_process).split()
+
+                    pred_units = self.task.target_dictionary.string(pred_units_arr)
+                    pred_words_raw = post_process(pred_units, self.post_process).split()
+
+                    dist = editdistance.eval(pred_words_raw, targ_words)
+                    w_errs += dist
+                    wv_errs += dist
+
+                    w_len += len(targ_words)
+
+                logging_output["ctc_wv_errors"] = wv_errs
+                logging_output["ctc_w_errors"] = w_errs
+                logging_output["ctc_w_total"] = w_len
+                logging_output["ctc_c_errors"] = c_err
+                logging_output["ctc_c_total"] = c_len
+
+            # import pdb; pdb.set_trace()
+
         return loss, sample_size, logging_output
 
     def compute_mwer_loss(self, model, sample):
-        import editdistance
         def decode(toks):
             s = self.task.target_dictionary.string(
                 toks.int().cpu(),
-                self.task.eval_wer_post_process,
+                self.post_process,
                 escape_unk=True,
             )
             if self.task.tokenizer:
@@ -151,3 +220,42 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         metrics.log_scalar(
             "mwer_loss", mwer_loss_sum / sample_size / math.log(2), sample_size, round=3
         )
+
+        c_errors = sum(log.get("ctc_c_errors", 0) for log in logging_outputs)
+        metrics.log_scalar("_ctc_c_errors", c_errors)
+        c_total = sum(log.get("ctc_c_total", 0) for log in logging_outputs)
+        metrics.log_scalar("_ctc_c_total", c_total)
+        w_errors = sum(log.get("ctc_w_errors", 0) for log in logging_outputs)
+        metrics.log_scalar("_ctc_w_errors", w_errors)
+        wv_errors = sum(log.get("ctc_wv_errors", 0) for log in logging_outputs)
+        metrics.log_scalar("_ctc_wv_errors", wv_errors)
+        w_total = sum(log.get("ctc_w_total", 0) for log in logging_outputs)
+        metrics.log_scalar("_ctc_w_total", w_total)
+
+        if c_total > 0:
+            metrics.log_derived(
+                "ctc_uer",
+                lambda meters: safe_round(
+                    meters["_ctc_c_errors"].sum * 100.0 / meters["_ctc_c_total"].sum, 3
+                )
+                if meters["_ctc_c_total"].sum > 0
+                else float("nan"),
+            )
+        if w_total > 0:
+            metrics.log_derived(
+                "ctc_wer",
+                lambda meters: safe_round(
+                    meters["_ctc_w_errors"].sum * 100.0 / meters["_ctc_w_total"].sum, 3
+                )
+                if meters["_ctc_w_total"].sum > 0
+                else float("nan"),
+            )
+            metrics.log_derived(
+                "ctc_raw_wer",
+                lambda meters: safe_round(
+                    meters["_ctc_wv_errors"].sum * 100.0 / meters["_ctc_w_total"].sum, 3
+                )
+                if meters["_ctc_w_total"].sum > 0
+                else float("nan"),
+            )
+
