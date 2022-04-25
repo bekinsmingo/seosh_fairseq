@@ -195,6 +195,7 @@ class SequenceGenerator(nn.Module):
         prefix_tokens: Optional[Tensor] = None,
         constraints: Optional[Tensor] = None,
         bos_token: Optional[int] = None,
+        mwer_training: Optional[bool] = False,
     ):
         incremental_states = torch.jit.annotate(
             List[Dict[str, Dict[str, Optional[Tensor]]]],
@@ -258,17 +259,6 @@ class SequenceGenerator(nn.Module):
         # compute the encoder output for each beam
         with torch.autograd.profiler.record_function("EnsembleModel: forward_encoder"):
             encoder_outs = self.model.forward_encoder(net_input)
-
-        # import pdb; pdb.set_trace()
-
-        '''
-        (Pdb) net_input.keys()
-        dict_keys(['source', 'padding_mask'])
-        (Pdb) net_input['source'].size()
-        torch.Size([7, 522320])
-        (Pdb) type(encoder_outs)
-        <class 'NoneType'>
-        '''
 
         # placeholder of indices for bsz * beam_size to hold tokens and accumulative scores
         new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
@@ -341,22 +331,44 @@ class SequenceGenerator(nn.Module):
                         corr.unsqueeze(-1) * beam_size
                     )
                     original_batch_idxs = original_batch_idxs[batch_idxs]
+
+                # tmp = []
+                # for incremental_state in incremental_states:
+                #     tmp_dict = {}
+                #     for k,v in incremental_state.items() :
+                #         if type(v) == torch.Tensor:
+                #             tmp_dict[k]=v.clone()
+                #         else:
+                #             tmp_dict[k]=v
+                #     tmp.append(tmp_dict)
+                # incremental_states = tmp
+
+                # tmp = []
+                # for encoder_out in encoder_outs:
+                #     tmp_dict = {}
+                #     for k,v in encoder_out.items():
+                #         if type(v) == torch.Tensor:
+                #             tmp_dict[k]=v.clone()
+                #         else:
+                #             tmp_dict[k]=v
+                #     tmp.append(tmp_dict)
+                # encoder_outs = tmp
+
                 self.model.reorder_incremental_state(incremental_states, reorder_state)
+
                 encoder_outs = self.model.reorder_encoder_out(
                     encoder_outs, reorder_state
                 )
+
             with torch.autograd.profiler.record_function(
                 "EnsembleModel: forward_decoder"
             ):
-                # import pdb; pdb.set_trace()
                 lprobs, avg_attn_scores = self.model.forward_decoder(
                     tokens[:, : step + 1],
                     encoder_outs,
                     incremental_states,
                     self.temperature,
                 )
-
-            # import pdb; pdb.set_trace()
 
             '''
             (Pdb) print(step); tokens[:, : step + 1]
@@ -367,37 +379,17 @@ class SequenceGenerator(nn.Module):
                     [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
                     [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
                     [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13],
-                    [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10,  4],
+
                     [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  7,  4],
                     [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4, 10, 20],
                     [ 2, 10,  6,  4, 10, 12,  4,  7, 12,  4,  6, 11],
                     [ 2, 10,  6,  4, 10, 12,  4,  7,  4, 12,  6, 13]], device='cuda:0')
             '''
             # batch * seq_len * vocab 
+
+            # oh my fcking god, i found it. if we want to mwer training, we hv to clone input tokens when implement inplace operation
+            if mwer_training:
+                lprobs = lprobs.clone()
 
             if self.lm_model is not None:
                 lm_out = self.lm_model(tokens[:, : step + 1])
@@ -425,10 +417,15 @@ class SequenceGenerator(nn.Module):
             ):
                 lprobs, tokens, scores = self._prefix_tokens(
                     step, lprobs, scores, tokens, prefix_tokens, beam_size
-                )
+                ) # every time step lprobs -> 80, 10001 -> total selected beam token scores 80, 201 
             elif step < self.min_len:
                 # minimum length constraint (does not apply if using prefix_tokens)
                 lprobs[:, self.eos] = -math.inf
+
+            # import pdb; pdb.set_trace()
+            # with torch.autograd.set_detect_anomaly(True):
+            #     print('lprobs.size()',lprobs.size())
+            #     lprobs.sum().backward()
 
             # Record attention scores, only support avg_attn_scores is a Tensor
             if avg_attn_scores is not None:
@@ -439,6 +436,7 @@ class SequenceGenerator(nn.Module):
                 attn[:, :, step + 1].copy_(avg_attn_scores)
 
             scores = scores.type_as(lprobs)
+
             eos_bbsz_idx = torch.empty(0).to(
                 tokens
             )  # indices of hypothesis ending with eos (finished sentences)
@@ -584,6 +582,10 @@ class SequenceGenerator(nn.Module):
 
             # copy tokens and scores for active hypotheses
 
+            # oh my fcking god, i found it. if we want to mwer training, we hv to clone input tokens when implement inplace operation
+            if mwer_training :
+                tokens = tokens.clone()
+
             # Set the tokens for each beam (can select the same row more than once)
             tokens[:, : step + 1] = torch.index_select(
                 tokens[:, : step + 1], dim=0, index=active_bbsz_idx
@@ -698,9 +700,15 @@ class SequenceGenerator(nn.Module):
 
         # compute scores per token position
         pos_scores = scores.index_select(0, bbsz_idx)[:, : step + 1]
+        # pos_scores = pos_scores.clone()
         pos_scores[:, step] = eos_scores
         # convert from cumulative to per-position scores
         pos_scores[:, 1:] = pos_scores[:, 1:] - pos_scores[:, :-1]
+
+        # import pdb; pdb.set_trace()
+        # with torch.autograd.set_detect_anomaly(True):
+        #     print('pos_scores.size()',pos_scores.size())
+        #     pos_scores.sum().backward()
 
         # normalize sentence-level scores
         if self.normalize_scores:
@@ -754,6 +762,7 @@ class SequenceGenerator(nn.Module):
                         "positional_scores": pos_scores[i],
                     }
                 )
+
 
         newly_finished: List[int] = []
         for unique_s in unique_seen:
@@ -841,11 +850,10 @@ class EnsembleModel(nn.Module):
         log_probs = []
         avg_attn: Optional[Tensor] = None
         encoder_out: Optional[Dict[str, List[Tensor]]] = None
+
         for i, model in enumerate(self.models):
             if self.has_encoder():
                 encoder_out = encoder_outs[i]
-
-            # import pdb; pdb.set_trace()
 
             # decode each model
             if self.has_incremental_states():
@@ -860,8 +868,15 @@ class EnsembleModel(nn.Module):
                 else:
                     decoder_out = model.forward(tokens)
 
+            # import pdb; pdb.set_trace()
+            # with torch.autograd.set_detect_anomaly(True):
+            #     print('decoder_out[0].size()',decoder_out[0].size())
+            #     # decoder_out[0].sum().backward()
+            #     decoder_out[0].sum().backward(retain_graph=True)
+
             attn: Optional[Tensor] = None
             decoder_len = len(decoder_out)
+
             if decoder_len > 1 and decoder_out[1] is not None:
                 if isinstance(decoder_out[1], Tensor):
                     attn = decoder_out[1]
@@ -882,6 +897,7 @@ class EnsembleModel(nn.Module):
                 decoder_out_tuple, log_probs=True, sample=None
             )
             probs = probs[:, -1, :]
+
             if self.models_size == 1:
                 return probs, attn
 
@@ -914,6 +930,7 @@ class EnsembleModel(nn.Module):
         Returns:
             *encoder_out* rearranged according to *new_order*
         """
+
         new_outs: List[Dict[str, List[Tensor]]] = []
         if not self.has_encoder():
             return new_outs

@@ -241,6 +241,8 @@ class AudioFinetuningTask(AudioPretrainingTask):
             loss *= 0
         with torch.autograd.profiler.record_function("backward"):
             optimizer.backward(loss)
+            # with torch.autograd.set_detect_anomaly(True):
+            #     optimizer.backward(loss)
         return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):

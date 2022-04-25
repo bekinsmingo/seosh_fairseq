@@ -762,6 +762,15 @@ class Wav2VecEncoder(FairseqEncoder):
             return self.forward_non_torchscript(net_input)
 
     def reorder_encoder_out(self, encoder_out, new_order):
+
+        # tmp_dict = {}
+        # for k,v in encoder_out.items():
+        #     if type(v) == torch.Tensor:
+        #         tmp_dict[k]=v.clone()
+        #     else:
+        #         tmp_dict[k]=v
+        # encoder_out = tmp_dict
+
         if encoder_out["encoder_out"] is not None:
             encoder_out["encoder_out"] = encoder_out["encoder_out"].index_select(
                 1, new_order

@@ -171,6 +171,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         return loss, sample_size, logging_output
 
     def compute_mwer_loss(self, model, sample):
+        # this is currently not supported, because i can't find which part is non-differentiable
+
         def decode(toks):
             s = self.task.target_dictionary.string(
                 toks.int().cpu(),
@@ -186,7 +188,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         # with torch.set_grad_enabled(True): 
         #     batch_nbest_lists = self.task.sequence_generator.generate([model], sample, prefix_tokens=None, constraints=None)
         with torch.set_grad_enabled(True): 
-            batch_nbest_lists = self.task.sequence_generator._generate(sample, prefix_tokens=None)
+            batch_nbest_lists = self.task.sequence_generator._generate(sample, prefix_tokens=None, mwer_training=True)
 
         mwer_loss = []
         for i, nbest_lists in enumerate(batch_nbest_lists):
@@ -206,6 +208,9 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             wers = -wers # because WERs are not good Reward, the lower is the better
 
             mwer_loss += [ -lprob * wer for lprob, wer in zip(hypo_scores, wers)]
+
+        # with torch.autograd.set_detect_anomaly(True):
+        #     torch.stack(mwer_loss).sum().backward()
         
         return torch.stack(mwer_loss).sum()
 
