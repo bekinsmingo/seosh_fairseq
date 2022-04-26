@@ -206,6 +206,9 @@ class SequenceGenerator(nn.Module):
         )
         net_input = sample["net_input"]
 
+        #print('net_input.keys()',net_input.keys())
+        #print('net_input["src_tokens"].size()',net_input["source"].size())
+
         if "src_tokens" in net_input:
             src_tokens = net_input["src_tokens"]
             # length of the source text being the character length except EndOfSentence and pad
@@ -279,6 +282,9 @@ class SequenceGenerator(nn.Module):
         )  # +2 for eos and pad
         tokens[:, 0] = self.eos if bos_token is None else bos_token
         attn: Optional[Tensor] = None
+        
+        #print('tokens',tokens.size())
+        #print('tokens',tokens)
 
         # A list that indicates candidates that should be ignored.
         # For example, suppose we're sampling and have already finalized 2/5
@@ -297,6 +303,11 @@ class SequenceGenerator(nn.Module):
         # a boolean array indicating if the sentence at the index is finished or not
         finished = [False for i in range(bsz)]
         num_remaining_sent = bsz  # number of sentences remaining
+
+        #print('finalized',len(finalized))
+        #print('finalized',finalized)
+        #print('finished',len(finished))
+        #print('finished',finished)
 
         # number of candidate hypos per step
         cand_size = 2 * beam_size  # 2 x beam size in case half are EOS
@@ -327,33 +338,34 @@ class SequenceGenerator(nn.Module):
                     corr = batch_idxs - torch.arange(batch_idxs.numel()).type_as(
                         batch_idxs
                     )
+                    reorder_state = reorder_state.clone()
                     reorder_state.view(-1, beam_size).add_(
                         corr.unsqueeze(-1) * beam_size
                     )
                     original_batch_idxs = original_batch_idxs[batch_idxs]
 
-                # tmp = []
-                # for incremental_state in incremental_states:
-                #     tmp_dict = {}
-                #     for k,v in incremental_state.items() :
-                #         if type(v) == torch.Tensor:
-                #             tmp_dict[k]=v.clone()
-                #         else:
-                #             tmp_dict[k]=v
-                #     tmp.append(tmp_dict)
-                # incremental_states = tmp
-
-                # tmp = []
-                # for encoder_out in encoder_outs:
-                #     tmp_dict = {}
-                #     for k,v in encoder_out.items():
-                #         if type(v) == torch.Tensor:
-                #             tmp_dict[k]=v.clone()
-                #         else:
-                #             tmp_dict[k]=v
-                #     tmp.append(tmp_dict)
-                # encoder_outs = tmp
-
+                #tmp = []
+                #for incremental_state in incremental_states:
+                #    tmp_dict = {}
+                #    for k,v in incremental_state.items() :
+                #        if type(v) == torch.Tensor:
+                #            tmp_dict[k]=v.clone()
+                #        else:
+                #            tmp_dict[k]=v
+                #    tmp.append(tmp_dict)
+                #incremental_states = tmp
+  
+                #tmp = []
+                #for encoder_out in encoder_outs:
+                #    tmp_dict = {}
+                #    for k,v in encoder_out.items():
+                #        if type(v) == torch.Tensor:
+                #            tmp_dict[k]=v.clone()
+                #        else:
+                #            tmp_dict[k]=v
+                #    tmp.append(tmp_dict)
+                #encoder_outs = tmp
+  
                 self.model.reorder_incremental_state(incremental_states, reorder_state)
 
                 encoder_outs = self.model.reorder_encoder_out(
@@ -462,11 +474,14 @@ class SequenceGenerator(nn.Module):
             # cand_bbsz_idx contains beam indices for the top candidate
             # hypotheses, with a range of values: [0, bsz*beam_size),
             # and dimensions: [bsz, cand_size]
+            cand_beams = cand_beams.clone()
             cand_bbsz_idx = cand_beams.add(bbsz_offsets)
 
             # finalize hypotheses that end in eos
             # Shape of eos_mask: (batch size, beam size)
             eos_mask = cand_indices.eq(self.eos) & cand_scores.ne(-math.inf)
+            eos_mask = eos_mask.clone()
+            cands_to_ignore = cands_to_ignore.clone()
             eos_mask[:, :beam_size][cands_to_ignore] = torch.tensor(0).to(eos_mask)
 
             # only consider eos when it's among the top beam_size indices
@@ -475,6 +490,15 @@ class SequenceGenerator(nn.Module):
             eos_bbsz_idx = torch.masked_select(
                 cand_bbsz_idx[:, :beam_size], mask=eos_mask[:, :beam_size]
             )
+
+            #print('step',step)
+            #print('eos_bbsz_idx',eos_bbsz_idx)
+            #print('eos_bbsz_idx.numel()',eos_bbsz_idx.numel())
+            #print('tokens',tokens)
+            
+            #print()
+            #print('finalized',finalized)
+            #print('finished',finished)
 
             finalized_sents: List[int] = []
             if eos_bbsz_idx.numel() > 0:
@@ -496,6 +520,23 @@ class SequenceGenerator(nn.Module):
                     max_len,
                 )
                 num_remaining_sent -= len(finalized_sents)
+
+             
+                #print('finalized_sents',finalized_sents)
+                #print('finalized_sents.keys()',finalized[0][0].keys()) 
+                #print('finalized_sents["positional_zores"]',finalized[0][0]["positional_zores"])
+                #print('finalized',finalized)
+                #print('finished',finished)
+                #print()
+                #import pdb; pdb.set_trace()
+
+
+                #import pdb; pdb.set_trace()
+                #with torch.autograd.set_detect_anomaly(True):
+                #    print('pos_scores.size()',finalized[1][0]["positional_scores"].size())
+                #    finalized[1][0]["positional_scores"].sum().backward()
+
+
 
             assert num_remaining_sent >= 0
             if num_remaining_sent == 0:
@@ -525,17 +566,22 @@ class SequenceGenerator(nn.Module):
                 eos_mask = eos_mask[batch_idxs]
                 cand_beams = cand_beams[batch_idxs]
                 bbsz_offsets.resize_(new_bsz, 1)
+                
+                cand_beams = cand_beams.clone()
                 cand_bbsz_idx = cand_beams.add(bbsz_offsets)
+                
                 cand_scores = cand_scores[batch_idxs]
                 cand_indices = cand_indices[batch_idxs]
 
                 if prefix_tokens is not None:
                     prefix_tokens = prefix_tokens[batch_idxs]
+                
                 src_lengths = src_lengths[batch_idxs]
                 cands_to_ignore = cands_to_ignore[batch_idxs]
 
                 scores = scores.view(bsz, -1)[batch_idxs].view(new_bsz * beam_size, -1)
                 tokens = tokens.view(bsz, -1)[batch_idxs].view(new_bsz * beam_size, -1)
+                
                 if attn is not None:
                     attn = attn.view(bsz, -1)[batch_idxs].view(
                         new_bsz * beam_size, attn.size(1), -1
@@ -550,7 +596,13 @@ class SequenceGenerator(nn.Module):
 
             # Rewrite the operator since the element wise or is not supported in torchscript.
 
+            eos_mask = eos_mask.clone()
+            cands_to_ignore = cands_to_ignore.clone()
             eos_mask[:, :beam_size] = ~((~cands_to_ignore) & (~eos_mask[:, :beam_size]))
+            
+            cand_offsets = cand_offsets.clone()
+            eos_mask = eos_mask.clone()
+
             active_mask = torch.add(
                 eos_mask.type_as(cand_offsets) * cand_size,
                 cand_offsets[: eos_mask.size(1)],
@@ -561,12 +613,15 @@ class SequenceGenerator(nn.Module):
             # {active_hypos} indicates which {beam_size} hypotheses
             # from the list of {2 * beam_size} candidates were
             # selected. Shapes: (batch size, beam size)
+            
+            active_mask = active_mask.clone()
             new_cands_to_ignore, active_hypos = torch.topk(
                 active_mask, k=beam_size, dim=1, largest=False
             )
 
             # update cands_to_ignore to ignore any finalized hypos.
             cands_to_ignore = new_cands_to_ignore.ge(cand_size)[:, :beam_size]
+            
             # Make sure there is at least one active item for each sentence in the batch.
             assert (~cands_to_ignore).any(dim=1).all()
 
@@ -590,6 +645,7 @@ class SequenceGenerator(nn.Module):
             tokens[:, : step + 1] = torch.index_select(
                 tokens[:, : step + 1], dim=0, index=active_bbsz_idx
             )
+            
             # Select the next token for each of them
             tokens.view(bsz, beam_size, -1)[:, :, step + 1] = torch.gather(
                 cand_indices, dim=1, index=active_hypos
@@ -598,6 +654,8 @@ class SequenceGenerator(nn.Module):
                 scores[:, :step] = torch.index_select(
                     scores[:, :step], dim=0, index=active_bbsz_idx
                 )
+            
+            scores = scores.clone()
             scores.view(bsz, beam_size, -1)[:, :, step] = torch.gather(
                 cand_scores, dim=1, index=active_hypos
             )
@@ -700,6 +758,7 @@ class SequenceGenerator(nn.Module):
 
         # compute scores per token position
         pos_scores = scores.index_select(0, bbsz_idx)[:, : step + 1]
+        pos_scroes = pos_scores.clone()
         # pos_scores = pos_scores.clone()
         pos_scores[:, step] = eos_scores
         # convert from cumulative to per-position scores
@@ -851,6 +910,8 @@ class EnsembleModel(nn.Module):
         avg_attn: Optional[Tensor] = None
         encoder_out: Optional[Dict[str, List[Tensor]]] = None
 
+        tokens = tokens.clone()
+
         for i, model in enumerate(self.models):
             if self.has_encoder():
                 encoder_out = encoder_outs[i]
@@ -890,7 +951,7 @@ class EnsembleModel(nn.Module):
                     attn = attn[:, -1, :]
 
             decoder_out_tuple = (
-                decoder_out[0][:, -1:, :].div_(temperature),
+                decoder_out[0][:, -1:, :].div_(temperature).clone(),
                 None if decoder_len <= 1 else decoder_out[1],
             )
             probs = model.get_normalized_probs(
@@ -930,7 +991,7 @@ class EnsembleModel(nn.Module):
         Returns:
             *encoder_out* rearranged according to *new_order*
         """
-
+        # new_order = new_order.clone()
         new_outs: List[Dict[str, List[Tensor]]] = []
         if not self.has_encoder():
             return new_outs
@@ -947,6 +1008,8 @@ class EnsembleModel(nn.Module):
         incremental_states: List[Dict[str, Dict[str, Optional[Tensor]]]],
         new_order,
     ):
+        new_order = new_order.clone()
+        
         if not self.has_incremental_states():
             return
         for i, model in enumerate(self.models):
