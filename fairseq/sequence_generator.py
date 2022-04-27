@@ -204,6 +204,16 @@ class SequenceGenerator(nn.Module):
                 for i in range(self.model.models_size)
             ],
         )
+
+        if (mwer_training) and (self.training):
+            self.model.train()
+            if self.lm_model is not None:
+                self.lm_model.train()
+        else:
+            self.model.eval()
+            if self.lm_model is not None:
+                self.lm_model.eval()
+
         net_input = sample["net_input"]
 
         #print('net_input.keys()',net_input.keys())
