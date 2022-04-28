@@ -90,7 +90,7 @@ class DVRLCriterion(CtcCriterion):
                                     tmp.append(sample[k][i])
                             new_sample[k] = torch.stack(tmp)
                         else:
-                            pass
+                            new_sample[k] = sample[k]
                         
                     if torch.cuda.is_available() :
                         new_sample = utils.move_to_cuda(new_sample)
@@ -99,7 +99,7 @@ class DVRLCriterion(CtcCriterion):
 
                     # import pdb; pdb.set_trace()
 
-                    net_output = model(**sample["net_input"])
+                    # net_output = model(**sample["net_input"])
                     # predictor_loss, predictor_lprobs, input_lengths, target_lengths  = self.compute_predictor_loss(model, net_output, sample, sampled_selcetion_vector)
                     net_output = model(**new_sample["net_input"])
                     predictor_loss, predictor_lprobs, input_lengths, target_lengths  = self.compute_predictor_loss(model, net_output, new_sample)
