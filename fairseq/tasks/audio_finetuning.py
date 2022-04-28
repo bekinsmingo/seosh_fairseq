@@ -168,7 +168,6 @@ class AudioFinetuningTask(AudioPretrainingTask):
     ):
         super().load_dataset(split, task_cfg, **kwargs)
 
-        # import pdb; pdb.set_trace()
         task_cfg = task_cfg or self.cfg
         assert task_cfg.labels is not None
         text_compression_level = getattr(

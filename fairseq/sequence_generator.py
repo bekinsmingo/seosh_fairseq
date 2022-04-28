@@ -348,7 +348,8 @@ class SequenceGenerator(nn.Module):
                     corr = batch_idxs - torch.arange(batch_idxs.numel()).type_as(
                         batch_idxs
                     )
-                    reorder_state = reorder_state.clone()
+                    if mwer_training:
+                        reorder_state = reorder_state.clone()
                     reorder_state.view(-1, beam_size).add_(
                         corr.unsqueeze(-1) * beam_size
                     )
@@ -376,7 +377,7 @@ class SequenceGenerator(nn.Module):
                 #    tmp.append(tmp_dict)
                 #encoder_outs = tmp
   
-                self.model.reorder_incremental_state(incremental_states, reorder_state)
+                self.model.reorder_incremental_state(incremental_states, reorder_state, mwer_training)
 
                 encoder_outs = self.model.reorder_encoder_out(
                     encoder_outs, reorder_state
@@ -390,6 +391,7 @@ class SequenceGenerator(nn.Module):
                     encoder_outs,
                     incremental_states,
                     self.temperature,
+                    mwer_training,
                 )
 
             '''
@@ -484,14 +486,16 @@ class SequenceGenerator(nn.Module):
             # cand_bbsz_idx contains beam indices for the top candidate
             # hypotheses, with a range of values: [0, bsz*beam_size),
             # and dimensions: [bsz, cand_size]
-            cand_beams = cand_beams.clone()
+            if mwer_training:
+                cand_beams = cand_beams.clone()
             cand_bbsz_idx = cand_beams.add(bbsz_offsets)
 
             # finalize hypotheses that end in eos
             # Shape of eos_mask: (batch size, beam size)
             eos_mask = cand_indices.eq(self.eos) & cand_scores.ne(-math.inf)
-            eos_mask = eos_mask.clone()
-            cands_to_ignore = cands_to_ignore.clone()
+            if mwer_training:
+                eos_mask = eos_mask.clone()
+                cands_to_ignore = cands_to_ignore.clone()
             eos_mask[:, :beam_size][cands_to_ignore] = torch.tensor(0).to(eos_mask)
 
             # only consider eos when it's among the top beam_size indices
@@ -528,6 +532,7 @@ class SequenceGenerator(nn.Module):
                     attn,
                     src_lengths,
                     max_len,
+                    mwer_training,
                 )
                 num_remaining_sent -= len(finalized_sents)
 
@@ -577,7 +582,8 @@ class SequenceGenerator(nn.Module):
                 cand_beams = cand_beams[batch_idxs]
                 bbsz_offsets.resize_(new_bsz, 1)
                 
-                cand_beams = cand_beams.clone()
+                if mwer_training:
+                    cand_beams = cand_beams.clone()
                 cand_bbsz_idx = cand_beams.add(bbsz_offsets)
                 
                 cand_scores = cand_scores[batch_idxs]
@@ -606,12 +612,14 @@ class SequenceGenerator(nn.Module):
 
             # Rewrite the operator since the element wise or is not supported in torchscript.
 
-            eos_mask = eos_mask.clone()
-            cands_to_ignore = cands_to_ignore.clone()
+            if mwer_training:
+                eos_mask = eos_mask.clone()
+                cands_to_ignore = cands_to_ignore.clone()
             eos_mask[:, :beam_size] = ~((~cands_to_ignore) & (~eos_mask[:, :beam_size]))
             
-            cand_offsets = cand_offsets.clone()
-            eos_mask = eos_mask.clone()
+            if mwer_training:
+                cand_offsets = cand_offsets.clone()
+                eos_mask = eos_mask.clone()
 
             active_mask = torch.add(
                 eos_mask.type_as(cand_offsets) * cand_size,
@@ -624,7 +632,8 @@ class SequenceGenerator(nn.Module):
             # from the list of {2 * beam_size} candidates were
             # selected. Shapes: (batch size, beam size)
             
-            active_mask = active_mask.clone()
+            if mwer_training:
+                active_mask = active_mask.clone()
             new_cands_to_ignore, active_hypos = torch.topk(
                 active_mask, k=beam_size, dim=1, largest=False
             )
@@ -665,7 +674,8 @@ class SequenceGenerator(nn.Module):
                     scores[:, :step], dim=0, index=active_bbsz_idx
                 )
             
-            scores = scores.clone()
+            if mwer_training:
+                scores = scores.clone()
             scores.view(bsz, beam_size, -1)[:, :, step] = torch.gather(
                 cand_scores, dim=1, index=active_hypos
             )
@@ -741,6 +751,7 @@ class SequenceGenerator(nn.Module):
         attn: Optional[Tensor],
         src_lengths,
         max_len: int,
+        mwer_training: bool = False
     ):
         """Finalize hypothesis, store finalized information in `finalized`, and change `finished` accordingly.
         A sentence is finalized when {beam_size} finished items have been collected for it.
@@ -768,8 +779,10 @@ class SequenceGenerator(nn.Module):
 
         # compute scores per token position
         pos_scores = scores.index_select(0, bbsz_idx)[:, : step + 1]
-        pos_scroes = pos_scores.clone()
-        # pos_scores = pos_scores.clone()
+
+        if mwer_training:
+            pos_scroes = pos_scores.clone()
+
         pos_scores[:, step] = eos_scores
         # convert from cumulative to per-position scores
         pos_scores[:, 1:] = pos_scores[:, 1:] - pos_scores[:, :-1]
@@ -915,12 +928,14 @@ class EnsembleModel(nn.Module):
         encoder_outs: List[Dict[str, List[Tensor]]],
         incremental_states: List[Dict[str, Dict[str, Optional[Tensor]]]],
         temperature: float = 1.0,
+        mwer_training: bool = False,
     ):
         log_probs = []
         avg_attn: Optional[Tensor] = None
         encoder_out: Optional[Dict[str, List[Tensor]]] = None
 
-        tokens = tokens.clone()
+        if mwer_training:
+            tokens = tokens.clone()
 
         for i, model in enumerate(self.models):
             if self.has_encoder():
@@ -961,7 +976,7 @@ class EnsembleModel(nn.Module):
                     attn = attn[:, -1, :]
 
             decoder_out_tuple = (
-                decoder_out[0][:, -1:, :].div_(temperature).clone(),
+                decoder_out[0][:, -1:, :].div_(temperature).clone() if mwer_training else decoder_out[0][:, -1:, :].div_(temperature),
                 None if decoder_len <= 1 else decoder_out[1],
             )
             probs = model.get_normalized_probs(
@@ -1001,7 +1016,7 @@ class EnsembleModel(nn.Module):
         Returns:
             *encoder_out* rearranged according to *new_order*
         """
-        # new_order = new_order.clone()
+
         new_outs: List[Dict[str, List[Tensor]]] = []
         if not self.has_encoder():
             return new_outs
@@ -1017,8 +1032,10 @@ class EnsembleModel(nn.Module):
         self,
         incremental_states: List[Dict[str, Dict[str, Optional[Tensor]]]],
         new_order,
+        mwer_training,
     ):
-        new_order = new_order.clone()
+        if mwer_training:
+            new_order = new_order.clone()
         
         if not self.has_incremental_states():
             return

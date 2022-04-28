@@ -79,11 +79,8 @@ class AddTargetDataset(BaseWrapperDataset):
                     pad_idx=self.pad,
                     left_pad=False,
                 )
-                # import pdb; pdb.set_trace()
         else:
             collated["ntokens"] = sum([len(t) for t in target])
-
-        # import pdb; pdb.set_trace()
 
         collated["target"] = target
         
