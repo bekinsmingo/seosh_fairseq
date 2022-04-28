@@ -33,11 +33,11 @@ def split_train_and_valid(p, file_name, train_file_name, valid_file_name):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Librispeech Dataset creation.")
     parser.add_argument(
-        "--file_path", help="data destination directory", default="/workspace/mounted_data/users/ssseo/data/lm/kr/general/corpus_32M.txt"
+        "--file_path", help="data destination directory", default="tmp.txt"
     )
 
     parser.add_argument(
-        "--model_dst", help="data destination directory", default="/workspace/kr_32M_corpus"
+        "--model_dst", help="data destination directory", default="tmp_out.txt"
     )
 
     parser.add_argument(
