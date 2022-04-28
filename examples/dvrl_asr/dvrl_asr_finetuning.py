@@ -38,6 +38,9 @@ class DVRLAudioFinetuningConfig(AudioFinetuningConfig):
         default=False,
         metadata={"help": ""},
     )
+    dvrl_valid_subset: str = field(
+        default='tiny_test_other', metadata={"help": "path to wav2vec ctc model"}
+    )
     dvrl_valid_max_tokens: int = II("dataset.max_tokens")
     dvrl_valid_max_sentences: int = II("dataset.batch_size")
     dvrl_valid_max_positions: int = II("dataset.max_tokens")
@@ -55,7 +58,7 @@ class DVRLAudioFinetuningTask(AudioFinetuningTask):
 
         self.cfg = cfg
 
-        subset = 'test_other'
+        subset = cfg.dvrl_valid_subset
         self.load_dataset(subset, cfg, combine=False, epoch=1)
         self.valid_subset_for_dve_training = self.get_valid_iterator(subset, cfg)
 

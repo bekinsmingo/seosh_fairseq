@@ -32,7 +32,7 @@ from fairseq.criterions.ctc import (
 @dataclass
 class DVRLCriterionConfig(CtcCriterionConfig):
     iteration: int = field(
-        default=10,
+        default=50,
         metadata={"help": "epsilon for label smoothing, 0 means no label smoothing"},
     )
     fp16: int = II("common.fp16")
@@ -55,7 +55,6 @@ class DVRLCriterion(CtcCriterion):
         4. Update both DVE and Predictor using Gradient Descent (Optimization) 
         '''
 
-
         valid_subset = valid_subset_for_dve_training.next_epoch_itr(
             shuffle=False, set_dataset_epoch=False  # use a fixed valid set
         )
@@ -76,6 +75,7 @@ class DVRLCriterion(CtcCriterion):
                     if optimizer is not None:
                         with torch.autograd.profiler.record_function("backward"):
                             optimizer.backward(predictor_loss)
+                # print('predictor_loss',predictor_loss)
 
             ## 3. Update the DVE model (1 iteration) (parametrized with \phi)
             valid_w_errs_total = 0
@@ -95,6 +95,8 @@ class DVRLCriterion(CtcCriterion):
 
             valid_wer = safe_round(valid_w_errs_total * 100.0 / valid_w_len_total, 3)
             dve_loss = self.compute_dve_loss(selection_prob, sampled_selcetion_vector)
+            # print('dve_loss',dve_loss)
+            # print('valid_wer',valid_wer)
 
             ## REINFORCE
             # dve_loss *= (valid_predictor_loss - model.moving_average_previous_loss)

@@ -44,7 +44,7 @@ class DVRLCtcConfig(Wav2Vec2CtcConfig):
     ## configs for w2v_ctc (refer to Wav2Vec2AsrConfig)
     tmp: float = 0
     moving_average_window: int = field(
-        default=10,
+        default=20,
         metadata={"help": "epsilon for label smoothing, 0 means no label smoothing"},
     )
 
