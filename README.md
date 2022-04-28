@@ -46,26 +46,18 @@ for n in range(torch.cuda.device_count()):
 
 ```python
 cuda availability ? True
-total gpu nums : 8
-cudnn backends version : 8005
-cuda version : 11.1
+total gpu nums : 4
+cudnn backends version : 8200
+cuda version : 11.3
 ******************************
-0th GPU name is Tesla P40
-         capability of this GPU is (6, 1)
-1th GPU name is Tesla P40
-         capability of this GPU is (6, 1)
-2th GPU name is Tesla P40
-         capability of this GPU is (6, 1)
-3th GPU name is Tesla P40
-         capability of this GPU is (6, 1)
-4th GPU name is Tesla P40
-         capability of this GPU is (6, 1)
-5th GPU name is Tesla P40
-         capability of this GPU is (6, 1)
-6th GPU name is Tesla P40
-         capability of this GPU is (6, 1)
-7th GPU name is Tesla P40
-         capability of this GPU is (6, 1)
+0th GPU name is NVIDIA A100-SXM4-80GB
+         capability of this GPU is (8, 0)
+1th GPU name is NVIDIA A100-SXM4-80GB
+         capability of this GPU is (8, 0)
+2th GPU name is NVIDIA A100-SXM4-80GB
+         capability of this GPU is (8, 0)
+3th GPU name is NVIDIA A100-SXM4-80GB
+         capability of this GPU is (8, 0)
 ```
 
 * check fairseq installation
