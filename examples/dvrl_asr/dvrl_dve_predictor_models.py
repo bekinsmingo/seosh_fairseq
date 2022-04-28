@@ -137,11 +137,16 @@ class DVE(BaseFairseqModel):
         self.cfg = cfg
         self.w2v_encoder = w2v_encoder
 
-        self.layer = Linear(w2v_encoder.encoder_embed_dim, 1)
+        dim = w2v_encoder.encoder_embed_dim
+
+        self.layers = [ Linear(dim, dim*2) if i==0 else Linear(dim*2, dim*2) for i in range(4)]
+        self.mlp = nn.Sequential(*self.layers)
+
+        self.attention_layer = Linear(dim*2, 1)
         self.tanh = nn.Tanh()
         self.softmax = nn.Softmax(dim=-1)
 
-        self.proj = Linear(w2v_encoder.encoder_embed_dim, 1)
+        self.proj = Linear(dim*2, 1)
 
     def forward(self, **kwargs):
         x = self.w2v_encoder.w2v_model.extract_features(**kwargs) # (B, T) -> (T, B, C) 
@@ -149,12 +154,13 @@ class DVE(BaseFairseqModel):
         padding_mask = x['padding_mask'] # (B, T)
 
         ## attention pooling score = w2 * tanh ( w1 * H' )
-        score = (self.layer(cnn_output)).squeeze(dim=-1) # (B, T, 1), projection to scalar score
+        hidden = self.mlp(cnn_output)
+        score = (self.attention_layer(hidden)).squeeze(dim=-1) # (B, T, 1), projection to scalar score
         if padding_mask is not None:
             score.data.masked_fill_(padding_mask, -float("inf"))
         attn_weights = self.softmax(score) # compute score
 
-        context = torch.bmm(attn_weights.unsqueeze(dim=1), cnn_output) # (B, 1, C) # weighted sum
+        context = torch.bmm(attn_weights.unsqueeze(dim=1), hidden) # (B, 1, C) # weighted sum
         out = context.squeeze(dim=1) # (B, C)
 
         out = self.proj(out)

@@ -24,6 +24,7 @@ from fairseq.dataclass.constants import DDP_BACKEND_CHOICES
 import logging
 logger = logging.getLogger(__name__)
 
+from collections import defaultdict
 
 from fairseq.criterions.ctc import (
     CtcCriterionConfig,
@@ -69,8 +70,39 @@ class DVRLCriterion(CtcCriterion):
                 sampled_selcetion_vector = model.sampler(selection_prob)
 
                 if sampled_selcetion_vector.sum() != 0 :
+
+                    new_sample = {}
+                    for k, v in sample.items():
+                        if type(sample[k]) == dict:
+                            tmp = {}
+                            for k_, v_ in sample[k].items():
+                                tmp_item = torch.tensor(()).cuda()
+                                for i, select in enumerate(sampled_selcetion_vector):
+                                    if select.item() : 
+                                        tmp_item = torch.cat((tmp_item, sample[k][k_][i].unsqueeze(0)),0)
+                                tmp[k_] = tmp_item if k_ != 'padding_mask' else tmp_item.to(torch.bool)
+                            
+                            new_sample[k] = tmp
+                        elif type(sample[k]) == torch.Tensor:
+                            tmp = []
+                            for i, select in enumerate(sampled_selcetion_vector):
+                                if select.item() : 
+                                    tmp.append(sample[k][i])
+                            new_sample[k] = torch.stack(tmp)
+                        else:
+                            pass
+                        
+                    if torch.cuda.is_available() :
+                        new_sample = utils.move_to_cuda(new_sample)
+                    if self.cfg.fp16:
+                        new_sample = utils.apply_to_sample(self.apply_half, new_sample)
+
+                    # import pdb; pdb.set_trace()
+
                     net_output = model(**sample["net_input"])
-                    predictor_loss, predictor_lprobs, input_lengths, target_lengths  = self.compute_predictor_loss(model, net_output, sample, sampled_selcetion_vector)
+                    # predictor_loss, predictor_lprobs, input_lengths, target_lengths  = self.compute_predictor_loss(model, net_output, sample, sampled_selcetion_vector)
+                    net_output = model(**new_sample["net_input"])
+                    predictor_loss, predictor_lprobs, input_lengths, target_lengths  = self.compute_predictor_loss(model, net_output, new_sample)
 
                     if optimizer is not None:
                         with torch.autograd.profiler.record_function("backward"):
