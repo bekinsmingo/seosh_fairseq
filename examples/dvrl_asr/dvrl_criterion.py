@@ -46,7 +46,7 @@ class DVRLCriterion(CtcCriterion):
         self.task = task
         self.iteration = iteration
 
-    def forward(self, model, sample, optimizer=None, valid_subset_for_dve_training=None, reduce=True):
+    def forward(self, model, sample, optimizer=None, valid_subset=None, reduce=True):
         '''
         The entire network consists of two model, DVE and predictor.
         The whole process is as follows;
@@ -55,10 +55,6 @@ class DVRLCriterion(CtcCriterion):
         3. Predictor finally output log_probs (loss) using data samples.
         4. Update both DVE and Predictor using Gradient Descent (Optimization) 
         '''
-
-        valid_subset = valid_subset_for_dve_training.next_epoch_itr(
-            shuffle=False, set_dataset_epoch=False  # use a fixed valid set
-        )
 
         if model.training:
             ## 1. compute selection prob
@@ -107,6 +103,9 @@ class DVRLCriterion(CtcCriterion):
                     if optimizer is not None:
                         with torch.autograd.profiler.record_function("backward"):
                             optimizer.backward(predictor_loss)
+                
+                # print()
+                # print('batch size', new_sample['net_input']['source'].size(0))
                 # print('predictor_loss',predictor_loss)
 
             ## 3. Update the DVE model (1 iteration) (parametrized with \phi)
@@ -131,13 +130,13 @@ class DVRLCriterion(CtcCriterion):
             # print('valid_wer',valid_wer)
 
             ## REINFORCE
-            # dve_loss *= (valid_predictor_loss - model.moving_average_previous_loss)
-            dve_loss *= (valid_wer - model.moving_average_previous_loss) # use WER as reward instead of loss
+            dve_loss *= (valid_predictor_loss - model.moving_average_previous_loss)
+            # dve_loss *= (valid_wer - model.moving_average_previous_loss) # use WER as reward instead of loss
+            # print('dve_loss after',dve_loss)
 
             ## update baseline (moving average)
-            model.update_moving_average_previous_loss(valid_wer)
-
-            # import pdb; pdb.set_trace()
+            model.update_moving_average_previous_loss(valid_predictor_loss)
+            # model.update_moving_average_previous_loss(valid_wer)
             
             if optimizer is not None:
                 with torch.autograd.profiler.record_function("backward"):
@@ -235,8 +234,8 @@ class DVRLCriterion(CtcCriterion):
         return loss, lprobs_, input_lengths, target_lengths
 
     def compute_dve_loss(self, selection_prob, sampled_selcetion_vector, reduce=True):
-        lprobs = torch.log(torch.sigmoid(selection_prob))
-        loss = - (lprobs * sampled_selcetion_vector + (1-lprobs) * (1-sampled_selcetion_vector))
+        prob = torch.sigmoid(selection_prob)
+        loss = - (torch.log(prob) * sampled_selcetion_vector + torch.log(1-prob) * (1-sampled_selcetion_vector))
         return loss.sum()
 
     def compute_wer(self, predictor_lprobs, sample, input_lengths):

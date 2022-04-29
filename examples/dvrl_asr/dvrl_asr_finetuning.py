@@ -58,9 +58,9 @@ class DVRLAudioFinetuningTask(AudioFinetuningTask):
 
         self.cfg = cfg
 
-        subset = cfg.dvrl_valid_subset
-        self.load_dataset(subset, cfg, combine=False, epoch=1)
-        self.valid_subset_for_dve_training = self.get_valid_iterator(subset, cfg)
+        self.dvrl_valid_subset = cfg.dvrl_valid_subset
+        self.load_dataset(self.dvrl_valid_subset, cfg, combine=False, epoch=1)
+        # self.valid_subset_for_dve_training = self.get_valid_iterator(subset, cfg)
 
 
     def train_step(
@@ -70,7 +70,13 @@ class DVRLAudioFinetuningTask(AudioFinetuningTask):
         model.set_num_updates(update_num)
         with torch.autograd.profiler.record_function("forward"):
             with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
-                loss, sample_size, logging_output = criterion(model, sample, optimizer, self.valid_subset_for_dve_training)
+                loss, sample_size, logging_output = criterion(
+                    model, 
+                    sample, 
+                    optimizer, 
+                    # self.valid_subset_for_dve_training
+                    self.get_valid_iterator(self.dvrl_valid_subset, self.cfg).next_epoch_itr(shuffle=False, set_dataset_epoch=False)
+                    )
         if ignore_grad:
             loss *= 0
         # with torch.autograd.profiler.record_function("backward"):
@@ -100,7 +106,7 @@ class DVRLAudioFinetuningTask(AudioFinetuningTask):
             ),
             seed=1,
             num_workers=cfg.dvrl_valid_num_workers,
-            epoch=1e+8,
+            epoch=1,
             data_buffer_size=cfg.dvrl_valid_data_buffer_size,
             disable_iterator_cache=disable_iterator_cache,
             skip_remainder_batch=False,
