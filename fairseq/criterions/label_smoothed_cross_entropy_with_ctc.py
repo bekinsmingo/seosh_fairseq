@@ -202,12 +202,19 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
                 wers.append((editdistance.eval(hypo_words, ref_words) * 100.0) / len(ref_words))
                 hypo_scores.append(hypo_score.sum())
+            
+            hypo_probs = torch.exp(hypo_scores)
+            re_normalized_hypo_scores = torch.log(hypo_probs) - torch.log(torch.sum(hypo_probs))
 
             wers_ = torch.FloatTensor(wers)
             wers = (wers_ - torch.mean(wers_)) / (wers_.std() + eps_for_reinforce)
             wers = -wers # because WERs are not good Reward, the lower is the better
+            '''
+            wers_ tensor([675.0000, 675.0000, 671.4286, 675.0000, 675.0000])
+            wers tensor([-0.4472, -0.4472,  1.7889, -0.4472, -0.4472])
+            '''
 
-            mwer_loss += [ -lprob * wer for lprob, wer in zip(hypo_scores, wers)]
+            mwer_loss += [ -lprob * wer for lprob, wer in zip(re_normalized_hypo_scores, wers)]
 
         # with torch.autograd.set_detect_anomaly(True):
         #     torch.stack(mwer_loss).sum().backward()
