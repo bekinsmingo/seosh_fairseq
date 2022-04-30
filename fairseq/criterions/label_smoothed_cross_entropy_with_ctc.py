@@ -93,6 +93,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         logging_output = {
             "loss": utils.item(loss.data),
             "nll_loss": utils.item(nll_loss.data),
+            "ce_loss": utils.item(ce_loss.data),
             "ctc_loss": utils.item(ctc_loss.data),
             "mwer_loss": utils.item(mwer_loss.data),
             "ntokens": sample["ntokens"],
@@ -197,17 +198,24 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             hypo_scores = []
 
             for hypos in nbest_lists:
-                hypo_words = decode(hypos['tokens']).split()
+                hypo_tokens = hypos['tokens']
+                # hypo_tokens_len = len(hypo_tokens)
+                hypo_words = decode(hypo_tokens).split()
                 hypo_score = hypos['positional_scores']
 
                 wers.append((editdistance.eval(hypo_words, ref_words) * 100.0) / len(ref_words))
-                hypo_scores.append(hypo_score.sum())
-            
+                hypo_scores.append(hypo_score.sum()) #lprobs, minus
+            hypo_scores = torch.stack(hypo_scores)
+
+            ## renormalized beam probs
             hypo_probs = torch.exp(hypo_scores)
+            # normalized probs -> hypo_probs/torch.sum(hypo_probs)
             re_normalized_hypo_scores = torch.log(hypo_probs) - torch.log(torch.sum(hypo_probs))
 
             wers_ = torch.FloatTensor(wers)
-            wers = (wers_ - torch.mean(wers_)) / (wers_.std() + eps_for_reinforce)
+            wers_ = F.softmax(wers_) # for avoiding gradient exploding
+            # wers = (wers_ - torch.mean(wers_)) / (wers_.std() + eps_for_reinforce)
+            wers = (wers_ - torch.mean(wers_))
             wers = -wers # because WERs are not good Reward, the lower is the better
             '''
             wers_ tensor([675.0000, 675.0000, 671.4286, 675.0000, 675.0000])
@@ -215,19 +223,25 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             '''
 
             mwer_loss += [ -lprob * wer for lprob, wer in zip(re_normalized_hypo_scores, wers)]
+            # mwer_loss += [ lprob * wer for lprob, wer in zip(re_normalized_hypo_scores, wers)]
 
         # with torch.autograd.set_detect_anomaly(True):
         #     torch.stack(mwer_loss).sum().backward()
         
         return torch.stack(mwer_loss).sum()
+        # return torch.stack(mwer_loss).mean()
 
     @classmethod
     def reduce_metrics(cls, logging_outputs) -> None:
         super().reduce_metrics(logging_outputs)
+        ce_loss_sum = sum(log.get("ce_loss", 0) for log in logging_outputs)
         ctc_loss_sum = sum(log.get("ctc_loss", 0) for log in logging_outputs)
         mwer_loss_sum = sum(log.get("mwer_loss", 0) for log in logging_outputs)
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
 
+        metrics.log_scalar(
+            "ce_loss", ce_loss_sum / sample_size / math.log(2), sample_size, round=3
+        )
         metrics.log_scalar(
             "ctc_loss", ctc_loss_sum / sample_size / math.log(2), sample_size, round=3
         )
