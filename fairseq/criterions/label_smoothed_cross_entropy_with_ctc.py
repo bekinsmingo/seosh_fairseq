@@ -195,39 +195,53 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         for i, nbest_lists in enumerate(batch_nbest_lists):
             ref_words = decode(utils.strip_pad(sample["target"][i], self.task.target_dictionary.pad()),).split()
             wers = []
-            hypo_scores = []
+            hypo_probs = []
 
             for hypos in nbest_lists:
                 hypo_tokens = hypos['tokens']
                 # hypo_tokens_len = len(hypo_tokens)
                 hypo_words = decode(hypo_tokens).split()
                 hypo_score = hypos['positional_scores']
+                hypo_prob = torch.exp(hypo_score.sum())
 
-                wers.append((editdistance.eval(hypo_words, ref_words) * 100.0) / len(ref_words))
-                hypo_scores.append(hypo_score.sum()) #lprobs, minus
-            hypo_scores = torch.stack(hypo_scores)
+                if torch.isnan(hypo_score).sum().item() > 0 : print('nan is detected in hypo_score (log prob)'); print(hypo_score); import pdb; pdb.set_trace()
+                if torch.isinf(hypo_score).sum().item() > 0 : print('inf is detected in hypo_score (log prob)'); print(hypo_score); import pdb; pdb.set_trace()
+
+                # to avoid -inf loss
+                if hypo_prob.item() > 0 :
+                    wers.append((editdistance.eval(hypo_words, ref_words) * 100.0) / len(ref_words))
+                    hypo_probs.append(hypo_prob) #lprobs, minus
+
+            if len(hypo_probs) == 0 :
+                continue
+
+            hypo_probs = torch.stack(hypo_probs)
 
             ## renormalized beam probs
-            hypo_probs = torch.exp(hypo_scores)
-            # normalized probs -> hypo_probs/torch.sum(hypo_probs)
             re_normalized_hypo_scores = torch.log(hypo_probs) - torch.log(torch.sum(hypo_probs))
 
+            # if torch.isnan(hypo_scores).sum().item() > 0 : print(hypo_scores); import pdb; pdb.set_trace()
+            # if torch.isinf(hypo_scores).sum().item() > 0 : print(hypo_scores); import pdb; pdb.set_trace()
+            if torch.isnan(hypo_probs).sum().item() > 0 : print('nan is detected in hypo_probs'); print(hypo_probs); import pdb; pdb.set_trace()
+            if torch.isinf(hypo_probs).sum().item() > 0 : print('inf is detected in hypo_probs'); print(hypo_probs); import pdb; pdb.set_trace()
+            if torch.isnan(re_normalized_hypo_scores).sum().item() > 0 : print('nan is detected in re_normalized_hypo_scores'); print(re_normalized_hypo_scores); import pdb; pdb.set_trace()
+            if torch.isinf(re_normalized_hypo_scores).sum().item() > 0 : print('inf is detected in re_normalized_hypo_scores'); print(re_normalized_hypo_scores); import pdb; pdb.set_trace()
+
             wers_ = torch.FloatTensor(wers)
-            wers_ = F.softmax(wers_) # for avoiding gradient exploding
+            # wers_ = F.softmax(wers_, dim=-1) # to avoid gradient exploding ?
             # wers = (wers_ - torch.mean(wers_)) / (wers_.std() + eps_for_reinforce)
             wers = (wers_ - torch.mean(wers_))
             wers = -wers # because WERs are not good Reward, the lower is the better
-            '''
-            wers_ tensor([675.0000, 675.0000, 671.4286, 675.0000, 675.0000])
-            wers tensor([-0.4472, -0.4472,  1.7889, -0.4472, -0.4472])
-            '''
 
             mwer_loss += [ -lprob * wer for lprob, wer in zip(re_normalized_hypo_scores, wers)]
             # mwer_loss += [ lprob * wer for lprob, wer in zip(re_normalized_hypo_scores, wers)]
 
         # with torch.autograd.set_detect_anomaly(True):
         #     torch.stack(mwer_loss).sum().backward()
-        
+
+        if torch.isnan(torch.stack(mwer_loss)).sum().item() > 0 : print(mwer_loss); import pdb; pdb.set_trace()
+        if torch.isinf(torch.stack(mwer_loss)).sum().item() > 0 : print(mwer_loss); import pdb; pdb.set_trace()
+
         return torch.stack(mwer_loss).sum()
         # return torch.stack(mwer_loss).mean()
 
