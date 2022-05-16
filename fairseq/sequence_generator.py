@@ -195,7 +195,8 @@ class SequenceGenerator(nn.Module):
         prefix_tokens: Optional[Tensor] = None,
         constraints: Optional[Tensor] = None,
         bos_token: Optional[int] = None,
-        mwer_training: Optional[bool] = False,
+        mwer_training = False,
+        beam_size_for_mwer_training = None,
     ):
         incremental_states = torch.jit.annotate(
             List[Dict[str, Dict[str, Optional[Tensor]]]],
@@ -248,7 +249,8 @@ class SequenceGenerator(nn.Module):
         # bsz: total number of sentences in beam
         # Note that src_tokens may have more than 2 dimensions (i.e. audio features)
         bsz, src_len = src_tokens.size()[:2]
-        beam_size = self.beam_size
+
+        beam_size = beam_size_for_mwer_training if beam_size_for_mwer_training else self.beam_size
 
         if constraints is not None and not self.search.supports_constraints:
             raise NotImplementedError(
@@ -1000,6 +1002,7 @@ class EnsembleModel(nn.Module):
 
         if avg_attn is not None:
             avg_attn.div_(self.models_size)
+            
         return avg_probs, avg_attn
 
     @torch.jit.export

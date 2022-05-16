@@ -334,6 +334,48 @@ def predict_batch_for_rescoring_roberta(sentences, model, fairseq_dict, max_len=
     return ppls, total_loss, nwords
 
 
+def predict_batch_for_rescoring_roberta_pll(sentences, model, fairseq_dict, max_len=None):
+    encoded_input = []
+    input_length = []
+    padded_input = []
+    ppls = []
+
+    total_loss = 0.0
+    nwords = 0
+
+    for sentence in sentences:
+        encoded = model.encode(sentence).tolist()
+        encoded_input.append(encoded)
+        input_length.append(len(encoded))
+        # import pdb; pdb.set_trace()
+
+    max_len = max(input_length)
+
+    for inp in encoded_input: 
+        if len(inp) < max_len:
+            padded_input.append(
+                inp + [fairseq_dict.pad()] * (max_len - len(inp))
+            )
+        else:
+            padded_input.append(inp)
+    x = torch.LongTensor(padded_input).cuda()
+
+    with torch.no_grad():
+        y = model.model(x)[0]
+        # logprobs = model.model.get_normalized_probs(y, True)
+        logprobs = torch.nn.functional.log_softmax(y, 2).detach().cpu().numpy()
+
+    for index, input_i in enumerate(encoded_input):
+        loss = numpy.sum(logprobs[index, numpy.arange(len(input_i)), input_i])
+        ppls.append(loss)
+
+        total_loss += loss
+        nwords += len(input_i)
+
+    return ppls, total_loss, nwords
+
+
+
 class InferenceProcessor:
     cfg: InferConfig
 
@@ -870,8 +912,7 @@ class InferenceProcessor:
 
                 max_len = len(sorted(batch, key=lambda x: len(x))[-1])
                 ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, self.rescoring_model, self.rescoring_dict, max_len)
-
-                # import pdb; pdb.set_trace()
+                # ppl using BERT
 
                 if self.general_rescoring:
                     general_ppls, general_loss_batch, general_nwords_batch = predict_batch_for_rescoring_roberta(batch_for_roberta, self.general_rescoring_model, self.general_rescoring_dict)
