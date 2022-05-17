@@ -343,34 +343,136 @@ def predict_batch_for_rescoring_roberta_pll(sentences, model, fairseq_dict, max_
     total_loss = 0.0
     nwords = 0
 
+    mask_token = model.task.source_dictionary.indices['<mask>']
+    sos_token = model.task.source_dictionary.indices['<s>']
+    eos_token = model.task.source_dictionary.indices['</s>']
+
+    # import pdb; pdb.set_trace()
+
     for sentence in sentences:
         encoded = model.encode(sentence).tolist()
-        encoded_input.append(encoded)
-        input_length.append(len(encoded))
+        encoded_tensor = torch.LongTensor(encoded)
+
+        repeated_encoded_tensor = encoded_tensor.repeat(len(encoded)-2,1)
+
+        diagonal_mask = torch.cat((torch.diag((torch.zeros(len(encoded)-2)+1).long(),1)[:-1],torch.zeros(len(encoded)-2,1).long()),1)
+        x = repeated_encoded_tensor.masked_fill_(diagonal_mask.bool(),mask_token).cuda()
+
+        log_prob_index = encoded_tensor[1:-1]
+
+        '''
+        (Pdb) encoded_tensor
+        tensor([    0,   100,   524,  2882,     7,  2914,    88,  1465,    19,     5,
+                41, 48319,     8,   619,   441,     7, 14874,   106,    13,   187,
+                167,   419,   360,    11,    61,   939,   156,     5, 10214,     9,
+                16627, 12479,  1757,   939,    33,  2435,    98,   203,    14,   939,
+                64,   122,  2592,   444,   357,  3745,     9,     5,   761,   939,
+                206,   939,    64,    67,    66,  5016,     5, 15750,   939,  2322,
+                13,   385,  7480,  1076,  3361, 22967,    61,    32,   202,   547,
+                11,   239, 38638,    11,   101,  4737,   939,   115,   146,    13,
+                47,   739,  3745,     9,  1637,     8,  4334,  5299,    25,   939,
+                222,    98,   747,    13,    14, 25097, 20303,  8453, 13638,   354,
+                    9,  6664,  2389,  2446,     7,     5,   372, 16602, 27797,    37,
+                1220,   162,   396,   655,  2086,    86,    13,     5,  7356,     9,
+                33568, 19638,    50,    97,  1364,     9,     5, 21546,   368,    18,
+                6306,     4,     2])
+
+        (Pdb) repeated_encoded_tensor
+        tensor([[   0,  100,  524,  ..., 6306,    4,    2],
+                [   0,  100,  524,  ..., 6306,    4,    2],
+                [   0,  100,  524,  ..., 6306,    4,    2],
+                ...,
+                [   0,  100,  524,  ..., 6306,    4,    2],
+                [   0,  100,  524,  ..., 6306,    4,    2],
+                [   0,  100,  524,  ..., 6306,    4,    2]])
+        (Pdb) repeated_encoded_tensor.size()
+        torch.Size([131, 133])
+
+        (Pdb) diagonal_mask
+        tensor([[0, 1, 0,  ..., 0, 0, 0],
+                [0, 0, 1,  ..., 0, 0, 0],
+                [0, 0, 0,  ..., 0, 0, 0],
+                ...,
+                [0, 0, 0,  ..., 0, 0, 0],
+                [0, 0, 0,  ..., 1, 0, 0],
+                [0, 0, 0,  ..., 0, 1, 0]])
+
+        (Pdb) x
+        tensor([[    0, 50264,   524,  ...,  6306,     4,     2],
+                [    0,   100, 50264,  ...,  6306,     4,     2],
+                [    0,   100,   524,  ...,  6306,     4,     2],
+                ...,
+                [    0,   100,   524,  ...,  6306,     4,     2],
+                [    0,   100,   524,  ..., 50264,     4,     2],
+                [    0,   100,   524,  ...,  6306, 50264,     2]], device='cuda:0')
+        '''
+
+        # tmp = torch.range(1,len(encoded)-2).long()
+        # tmp = torch.cat((torch.zeros(len(encoded)-2,1).long(),torch.diag(tmp),torch.zeros(len(encoded)-2,1).long()),1).unsqueeze(-1).cuda()
+
+        with torch.no_grad():
+            y = model.model(x)[0]
+            logprobs = torch.nn.functional.log_softmax(y, 2).detach().cpu().numpy()
+        
         # import pdb; pdb.set_trace()
 
-    max_len = max(input_length)
+        '''
+        torch.return_types.max(
+        values=tensor([[-2.4796e-05, -2.3877e-01, -1.1320e-03,  ..., -1.0620e-02,
+                -1.1921e-05, -1.1730e-04],
+                [-1.2159e-05, -2.3346e-03, -1.2128e-01,  ..., -1.2001e-02,
+                -1.1563e-05, -1.1480e-04],
+                [-1.2398e-05, -5.2071e-03, -8.3351e-04,  ..., -1.1269e-02,
+                -1.1802e-05, -1.1468e-04],
+                ...,
+                [-5.2452e-06, -1.3901e-02, -6.8378e-04,  ..., -9.3231e-03,
+                -1.7047e-05, -1.2195e-04],
+                [-5.0068e-06, -1.4557e-02, -6.5470e-04,  ..., -3.4023e+00,
+                -1.4186e-05, -1.2791e-04],
+                [-7.5102e-06, -8.3237e-03, -6.6423e-04,  ..., -1.0826e-02,
+                -6.7949e-06, -4.1723e-04]], device='cuda:0', dtype=torch.float16),
+        indices=tensor([[   0,  939,  524,  ..., 6306,    4,    2],
+                [   0,  100,  524,  ..., 6306,    4,    2],
+                [   0,  100,  524,  ..., 6306,    4,    2],
+                ...,
+                [   0,  100,  524,  ..., 6306,    4,    2],
+                [   0,  100,  524,  ..., 1808,    4,    2],
+                [   0,  100,  524,  ..., 6306,    4,    2]], device='cuda:0'))
 
-    for inp in encoded_input: 
-        if len(inp) < max_len:
-            padded_input.append(
-                inp + [fairseq_dict.pad()] * (max_len - len(inp))
-            )
-        else:
-            padded_input.append(inp)
-    x = torch.LongTensor(padded_input).cuda()
+        (Pdb) encoded_tensor
+        tensor([    0,   100,   524,  2882,     7,  2914,    88,  1465,    19,     5,
+                41, 48319,     8,   619,   441,     7, 14874,   106,    13,   187,
+                167,   419,   360,    11,    61,   939,   156,     5, 10214,     9,
+                16627, 12479,  1757,   939,    33,  2435,    98,   203,    14,   939,
+                64,   122,  2592,   444,   357,  3745,     9,     5,   761,   939,
+                206,   939,    64,    67,    66,  5016,     5, 15750,   939,  2322,
+                13,   385,  7480,  1076,  3361, 22967,    61,    32,   202,   547,
+                11,   239, 38638,    11,   101,  4737,   939,   115,   146,    13,
+                47,   739,  3745,     9,  1637,     8,  4334,  5299,    25,   939,
+                222,    98,   747,    13,    14, 25097, 20303,  8453, 13638,   354,
+                    9,  6664,  2389,  2446,     7,     5,   372, 16602, 27797,    37,
+                1220,   162,   396,   655,  2086,    86,    13,     5,  7356,     9,
+                33568, 19638,    50,    97,  1364,     9,     5, 21546,   368,    18,
+                6306,     4,     2])
 
-    with torch.no_grad():
-        y = model.model(x)[0]
-        # logprobs = model.model.get_normalized_probs(y, True)
-        logprobs = torch.nn.functional.log_softmax(y, 2).detach().cpu().numpy()
+        (Pdb) sentence
+        "I am willing to enter into competition with the ancients and feel able to surpass them for since those early days 
+        in which i made the medals of pope clement i have learned so much that i can now produce far better pieces of the kind 
+        i think i can also outdo the coins i struck for duke alessandro which are still held in high esteem in like manner 
+        i could make for you large pieces of gold and silver plate as i did so often for that noble monarch king francis of france 
+        thanks to the great conveniences he allowed me without ever losing time for the execution of colossal statues or other works of the sculptor's craft."
 
-    for index, input_i in enumerate(encoded_input):
-        loss = numpy.sum(logprobs[index, numpy.arange(len(input_i)), input_i])
+        # 나는 스테이크를 먹었다 교도소에서.
+        '''
+
+
+        loss = 0.0
+        for i, index in enumerate(log_prob_index):
+            loss += logprobs[i,i+1,index]
         ppls.append(loss)
 
         total_loss += loss
-        nwords += len(input_i)
+        nwords += len(log_prob_index)
 
     return ppls, total_loss, nwords
 
@@ -423,89 +525,94 @@ class InferenceProcessor:
         self.rescoring_weight = cfg.decoding.rescoringweight
         self.rescoring_word_len_weight = cfg.decoding.rescoringwordlenweight
 
-        self.general_rescoring = cfg.decoding.generalrescoring
-        self.general_rescoring_weight = cfg.decoding.generalrescoringweight
+        # self.general_rescoring = cfg.decoding.generalrescoring
+        # self.general_rescoring_weight = cfg.decoding.generalrescoringweight
 
         self.save_result = cfg.decoding.saveresult
         self.save_result_path = cfg.decoding.saveresultpath
 
-        # if self.rescoring:
-        #     device = 'cuda'
-        #     model_name = "gpt2"
-        #     # model_name = "gpt2-large"
-        #     from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForCausalLM, AutoTokenizer
-        #     self.rescoring_model = (
-        #         AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, is_decoder=True)
-        #         .to(device)
-        #         .eval()
-        #     )
-        #     self.rescoring_tokenizer = AutoTokenizer.from_pretrained(model_name)
-        #     self.rescoring_tokenizer.pad_token = self.rescoring_tokenizer.eos_token
-
-        #     # gpt model
-        #     model_name = "gpt2"
-        #     from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForCausalLM, AutoTokenizer
-
-        #     gpt_rescoring_model = (
-        #         AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, is_decoder=True)
-        #         .to('cuda')
-        #         .eval()
-        #     )
-        #     gpt_rescoring_tokenizer = AutoTokenizer.from_pretrained(model_name)
-        #     gpt_rescoring_tokenizer.pad_token = gpt_rescoring_tokenizer.eos_token
-
-
-
+        # # original code
+        # logger.info("| loading rescoring lm model from {}".format(cfg.decoding.rescoringlmpath))
+        # path, checkpoint = os.path.split(self.cfg.decoding.rescoringlmpath)
+        # dict_path = os.path.join(path,'dict.txt')
+        # self.rescoring_dict = Dictionary.load(dict_path)
+        # self.rescoring_model = load_rescoring_model(self.cfg.decoding.rescoringlmpath, 'transformer', dict_path)
 
         if self.rescoring : 
-
+                
             # my model
             print('cfg.decoding.rescoringlmpath',cfg.decoding.rescoringlmpath)
             path, checkpoint = os.path.split(cfg.decoding.rescoringlmpath)
-
-            # import pdb; pdb.set_trace()
-            overrides = {
-                "task": 'language_modeling',
-                "data": path,
-            }
-            logger.info("| loading rescoring lm model from {}".format(cfg.decoding.rescoringlmpath))
-            rescoring_models, rescoring_saved_cfg, rescoring_task = checkpoint_utils.load_model_ensemble_and_task(
-                utils.split_paths(cfg.decoding.rescoringlmpath, separator="\\"),
-                arg_overrides=overrides,
-                strict=True,
-            )
-
-            self.rescoring_model = rescoring_models[0]
-            self.rescoring_model.eval().cuda()
-            self.rescoring_model.make_generation_fast_()
-            if rescoring_saved_cfg.common.fp16:
-                self.rescoring_model.half()
-            self.rescoring_model = self.rescoring_model.decoder
-
             dict_path = os.path.join(path,'dict.txt')
             self.rescoring_dict = Dictionary.load(dict_path)
 
-            # # original code
-            # logger.info("| loading rescoring lm model from {}".format(cfg.decoding.rescoringlmpath))
-            # path, checkpoint = os.path.split(self.cfg.decoding.rescoringlmpath)
-            # dict_path = os.path.join(path,'dict.txt')
-            # self.rescoring_dict = Dictionary.load(dict_path)
-            # self.rescoring_model = load_rescoring_model(self.cfg.decoding.rescoringlmpath, 'transformer', dict_path)
-
-            self.general_rescoring_model = None
-            self.general_rescoring_dict = None
-            if self.general_rescoring:
+            if 'bert' in cfg.decoding.rescoringlmpath:
                 ## roberta
-                path, checkpoint = os.path.split(cfg.decoding.generalrescoringlmpath)
                 from fairseq.models.roberta import RobertaModel
-                self.general_rescoring_model = RobertaModel.from_pretrained(path, checkpoint_file=checkpoint)
-                self.general_rescoring_model.eval().cuda()
-                self.general_rescoring_model.half()
+                self.rescoring_model = RobertaModel.from_pretrained(path, checkpoint_file=checkpoint)
+                # self.rescoring_model.model.make_generation_fast_()
+                self.rescoring_model.eval().cuda()
+                self.rescoring_model.half()
+                self.rescoring_model_type = 'fairseq_bert'
 
-                dict_path = os.path.join(path,'dict.txt')
-                self.general_rescoring_dict = Dictionary.load(dict_path)
+                # ## for debugging tfm vs roberta
+                # tmp_path = '/workspace/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt'
+                # path, checkpoint = os.path.split(tmp_path)
+                # dict_path = os.path.join(path,'dict.txt')
+                # self.tfm_rescoring_dict = Dictionary.load(dict_path)
 
+                # overrides = {
+                #     "task": 'language_modeling',
+                #     "data": path,
+                # }
+                # logger.info("| loading rescoring lm model from {}".format(tmp_path))
+                # rescoring_models, rescoring_saved_cfg, rescoring_task = checkpoint_utils.load_model_ensemble_and_task(
+                #     utils.split_paths(tmp_path, separator="\\"),
+                #     arg_overrides=overrides,
+                #     strict=True,
+                # )
 
+                # self.tfm_rescoring_model = rescoring_models[0]
+                # self.tfm_rescoring_model.eval().cuda()
+                # self.tfm_rescoring_model.make_generation_fast_()
+                # if rescoring_saved_cfg.common.fp16:
+                #     self.tfm_rescoring_model.half()
+                # self.tfm_rescoring_model = self.tfm_rescoring_model.decoder
+
+            else:
+                overrides = {
+                    "task": 'language_modeling',
+                    "data": path,
+                }
+                logger.info("| loading rescoring lm model from {}".format(cfg.decoding.rescoringlmpath))
+                rescoring_models, rescoring_saved_cfg, rescoring_task = checkpoint_utils.load_model_ensemble_and_task(
+                    utils.split_paths(cfg.decoding.rescoringlmpath, separator="\\"),
+                    arg_overrides=overrides,
+                    strict=True,
+                )
+
+                self.rescoring_model = rescoring_models[0]
+                self.rescoring_model.eval().cuda()
+                self.rescoring_model.make_generation_fast_()
+                if rescoring_saved_cfg.common.fp16:
+                    self.rescoring_model.half()
+                self.rescoring_model = self.rescoring_model.decoder
+                self.rescoring_model_type = 'fairseq_tfm_decoder'
+
+            # else:
+            #     device = 'cuda'
+            #     model_name = "gpt2"
+            #     # model_name = "gpt2-large"
+            #     from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForCausalLM, AutoTokenizer
+            #     self.rescoring_model = (
+            #         AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name, is_decoder=True)
+            #         .to(device)
+            #         .eval()
+            #     )
+            #     self.rescoring_dict = AutoTokenizer.from_pretrained(model_name)
+            #     self.rescoring_dict.pad_token = self.rescoring_dict.eos_token
+
+            # import pdb; pdb.set_trace()
 
     def __enter__(self) -> "InferenceProcessor":
         if self.cfg.decoding.results_path is not None:
@@ -746,6 +853,8 @@ class InferenceProcessor:
                 logger.info(f"TARG : {tgt_words}")
                 logger.info("---------------------")
 
+            # import pdb; pdb.set_trace()
+
             if self.save_result:
                 file_name = os.path.join(self.save_result_path, 'w2v2_' + self.cfg.decoding.type + '_nbest_' + str(self.cfg.decoding.nbest))
                 if self.cfg.decoding.rescoringlmpath:
@@ -789,60 +898,22 @@ class InferenceProcessor:
         (Pdb) sample['net_input'].keys()
         dict_keys(['source', 'padding_mask'])
 
-        (Pdb) type(sample['net_input']['source'])
-        <class 'torch.Tensor'>
-        '''
-
-        '''
-        (Pdb) self.models[0].w2v_encoder.proj.weight.dtype
-        torch.float32
-
         (Pdb) self.models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight.dtype
         torch.float32
 
         (Pdb) self.models[0].half()
         (Pdb) self.models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight.dtype
         torch.float16
-        (Pdb) self.models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight
-        Parameter containing:
-        tensor([[ 0.0888,  0.2118, -0.1012,  ...,  0.0049,  0.1906,  0.1567],
-                [-0.0044,  0.0175, -0.0861,  ...,  0.0859, -0.0656,  0.0097],
-                [-0.0216, -0.0445, -0.0444,  ..., -0.3267, -0.0875, -0.0676],
-                ...,
-                [-0.0927, -0.1041, -0.1175,  ...,  0.0565, -0.0975, -0.0226],
-                [ 0.1456,  0.1434, -0.0168,  ..., -0.1377,  0.0690, -0.1309],
-                [-0.0152,  0.0212, -0.0604,  ...,  0.1694, -0.1129, -0.1088]],
-            device='cuda:0', dtype=torch.float16, requires_grad=True)
 
         (Pdb) sample['net_input']['source'].size()
         torch.Size([7, 552160])
-
-        when batch size is 32
-        (Pdb) sample['net_input']['source'].size()
-        torch.Size([32, 552160])
         '''
-
-        # import pdb; pdb.set_trace()
 
         hypos = self.task.inference_step(
             generator=self.generator,
             models=self.models,
             sample=sample,
         )
-
-        # import pdb; pdb.set_trace()
-
-        '''
-        (Pdb) self.models[0](**sample['net_input'])
-        *** RuntimeError: CUDA out of memory. Tried to allocate 638.00 MiB 
-        (GPU 0; 23.88 GiB total capacity; 22.51 GiB already allocated; 274.88 MiB free; 22.75 GiB reserved in total by PyTorch)
-
-        (Pdb) with torch.no_grad(): self.models[0](**sample['net_input'])
-        '''
-
-
-
-        # import pdb; pdb.set_trace()
 
         if self.cfg.decoding.type == 'pyctcdecoder':
             # num_generated_tokens = sum(len(h.split()) for h in hypos)
@@ -859,8 +930,8 @@ class InferenceProcessor:
         #         beams = []
         #         for hypo in nbest_hypos:
         #             inputs.append(' '.join(hypo['words']))
-        #         encoded = self.rescoring_tokenizer(inputs, return_tensors='pt', padding=True, truncation=True)['input_ids'].to(self.rescoring_model.device)
-        #         inputs_mask = (encoded != self.rescoring_tokenizer.pad_token_id)
+        #         encoded = self.rescoring_dict(inputs, return_tensors='pt', padding=True, truncation=True)['input_ids'].to(self.rescoring_model.device)
+        #         inputs_mask = (encoded != self.rescoring_dict.pad_token_id)
 
         #         with torch.no_grad():
         #             output = self.rescoring_model(input_ids=encoded, attention_mask=inputs_mask)
@@ -891,51 +962,70 @@ class InferenceProcessor:
 
             for i, nbest_hypos in enumerate(hypos): # B -> nbest 
                 batch = []
-                batch_for_roberta = []
+                # tmp_batch = []
                 max_len = 0
                 for j, n_th_hypo in enumerate(nbest_hypos):
 
-                    # for tfm
                     sent = n_th_hypo['words']
                     score = n_th_hypo['score'] # am + lm + word_penalty
                     hypos[i][j]['wl_len'] = len(sent) + len("".join(sent)) # word length + char length 
-                    sent = " ".join(sent).lower().split()
 
-                    batch.append(sent) # word 
+                    if self.rescoring_model_type == 'fairseq_tfm_decoder':
+                        tmp = " ".join(sent).lower().split()
+                        batch.append(tmp) # word 
+                    elif self.rescoring_model_type == 'fairseq_bert':
+                        tmp = " ".join(sent)
+                        if len(tmp)>1:
+                            batch.append(tmp[0].upper()+tmp[1:].lower()+'.')
+                        else:
+                            batch.append(' ')
 
-                    # for roberta
-                    tmp = " ".join(n_th_hypo['words'])
-                    if len(tmp)>1:
-                        batch_for_roberta.append(tmp[0].upper()+tmp[1:].lower()+'.')
-                    else:
-                        batch_for_roberta.append(' ')
+                        # tmp = " ".join(sent).lower().split()
+                        # tmp_batch.append(tmp) # word 
 
-                max_len = len(sorted(batch, key=lambda x: len(x))[-1])
-                ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, self.rescoring_model, self.rescoring_dict, max_len)
-                # ppl using BERT
+                if self.rescoring_model_type == 'fairseq_tfm_decoder':
+                    max_len = len(sorted(batch, key=lambda x: len(x))[-1])
+                    ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(batch, self.rescoring_model, self.rescoring_dict, max_len)
+                elif self.rescoring_model_type == 'fairseq_bert':
+                    ppls, loss_batch, nwords_batch = predict_batch_for_rescoring_roberta_pll(batch, self.rescoring_model, self.rescoring_dict)
 
-                if self.general_rescoring:
-                    general_ppls, general_loss_batch, general_nwords_batch = predict_batch_for_rescoring_roberta(batch_for_roberta, self.general_rescoring_model, self.general_rescoring_dict)
+                    # max_len = len(sorted(batch, key=lambda x: len(x))[-1])
+                    # tmp_ppls, loss_batch, nwords_batch = predict_batch_for_rescoring(tmp_batch, self.tfm_rescoring_model, self.tfm_rescoring_dict, max_len)
+
+                    '''
+                    (Pdb) ppls
+                    [-323.59491527080536, -323.9512754678726, -340.0725562572479, -324.9497228860855, -335.42124104499817, 
+                    -325.53756296634674, -340.4702961444855, -324.4972655773163, -325.3306745290756, -328.8111617565155]
+
+                    (Pdb) tmp_ppls
+                    [-450.0, -458.0, -454.2, -451.5, -455.8, 
+                    -452.2, -462.2, -450.5, -459.8, -455.5]
+                    '''
+
+                # import pdb; pdb.set_trace()
 
                 for j, n_th_hypo in enumerate(nbest_hypos):
                     ppl = ppls[j]
-                    general_ppl = general_ppls[j] if self.general_rescoring else 0
                     hypos[i][j]['rescoring_lm_ppl'] = ppl
-                    hypos[i][j]['general_rescoring_lm_ppl'] = general_ppl
                     hypos[i][j]['total_score'] = (
                         n_th_hypo['am_score']
                         + self.rescoring_weight * ppl 
-                        + self.general_rescoring_weight * general_ppl
                         + self.rescoring_word_len_weight * n_th_hypo['wl_len'] 
                         )
 
                 # import pdb; pdb.set_trace()
 
+                # Original Rescoring log P_{AM} (y|x) + \alpha1 log P_{LM1}(y) + \beta |y| + \alpha2 log P_{LM2}(y)
                 # hypos[i] = sorted(nbest_hypos, key=lambda x: -x["rescoring_lm_ppl"])
                 hypos[i] = sorted(nbest_hypos, key=lambda x: -x["total_score"])
 
             num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
             self.gen_timer_for_rescoring.stop(num_generated_tokens)
+
+            '''
+            (Pdb) hypos[0][0].keys()
+            dict_keys(['tokens', 'score', 'am_score', 'lm_score', 'timesteps', 'words', 'wl_len', 'rescoring_lm_ppl', 'total_score'])
+            '''
 
         for batch_id, sample_id in enumerate(sample["id"].tolist()):
             errs, length, best_errs, best_length = self.process_sentence(
@@ -957,6 +1047,7 @@ class InferenceProcessor:
             self.num_sentences += sample["nsentences"]
         else:
             self.num_sentences += sample["id"].numel()
+
 
     def log_generation_time(self) -> None:
         logger.info(

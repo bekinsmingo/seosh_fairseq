@@ -60,7 +60,7 @@ class MaskedLmLoss(FairseqCriterion):
         if masked_tokens is not None:
             targets = targets[masked_tokens]
 
-        import pdb; pdb.set_trace()
+        #import pdb; pdb.set_trace()
         '''
         (Pdb) sample['target'][-1][-20:]
         tensor([ 1,  1,  1,  1,  1, 10,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,

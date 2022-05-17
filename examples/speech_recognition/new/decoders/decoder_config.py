@@ -83,20 +83,29 @@ class FlashlightDecoderConfig(FairseqDataclass):
         default=None,
         metadata={"help": ""},
     )
-    generalrescoring: bool = field(
-        default=False,
-    )
-    generalrescoringweight: float = field(
-        default=2,
-        metadata={"help": "Weight for LM while interpolating score"},
-    )
-    generalrescoringlmpath: Optional[str] = field(
-        default=None,
-        metadata={"help": ""},
-    )
+
+    # generalrescoring: bool = field(
+    #     default=False,
+    # )
+    # generalrescoringweight: float = field(
+    #     default=2,
+    #     metadata={"help": "Weight for LM while interpolating score"},
+    # )
+    # generalrescoringlmpath: Optional[str] = field(
+    #     default=None,
+    #     metadata={"help": ""},
+    # )
+
     saveresult: bool = field(
         default=False,
     )
-    saveresultpath: str = field(
-        default=MISSING,
+    saveresultpath: Optional[str] = field(
+        default=None,
+    )
+
+    usedumpedbeam: bool = field(
+        default=False,
+    )
+    usedumpedbeampath: Optional[str] = field(
+        default=None,
     )
