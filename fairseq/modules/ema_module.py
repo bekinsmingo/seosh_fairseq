@@ -102,7 +102,7 @@ class EMAModule:
         ema_params = (
             self.fp32_params if self.config.ema_fp32 else self.model.state_dict()
         )
-        for key, param in new_model.state_dict().items():
+        for key, param in new_model.named_parameters():
             if isinstance(param, dict):
                 continue
             try:
@@ -111,6 +111,7 @@ class EMAModule:
                 ema_param = (
                     param.float().clone() if param.ndim == 1 else copy.deepcopy(param)
                 )
+                ema_params[key] = ema_param
 
             if param.shape != ema_param.shape:
                 raise ValueError(
@@ -122,22 +123,23 @@ class EMAModule:
                 # Do not decay a model.version pytorch param
                 continue
 
-            # decay or not
-            if key in self.skip_keys:
-                # import pdb; pdb.set_trace()
-                ema_param = param.to(dtype=ema_param.dtype).clone()
-                ema_params[key].copy_(ema_param)
+            if key in self.skip_keys or not param.requires_grad:
+                ema_params[key].copy_(param.to(dtype=ema_param.dtype).data)
+                ema_param = ema_params[key]
             else:
                 # multiply and add 
                 # \delta <- \tau * \delta + ( 1 - \tau ) * \theta 
                 ema_param.mul_(decay)
-                ema_param.add_(param.to(dtype=ema_param.dtype), alpha=1 - decay)
+                ema_param.add_(param.data.to(dtype=ema_param.dtype), alpha=1 - decay)
 
             ema_state_dict[key] = ema_param
 
-        # ema_state_dict -> EMA teacher model params
+        for key, param in new_model.named_buffers():
+            ema_state_dict[key] = param
+
         self.restore(ema_state_dict, build_fp32_params=False)
 
+    @torch.no_grad()
     def step(self, new_model):
         self._step_internal(new_model)
 
