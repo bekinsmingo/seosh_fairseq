@@ -353,6 +353,7 @@ def _main(cfg: DictConfig, output_file):
                 if src_dict is not None:
                     print("S-{}\t{}".format(sample_id, src_str), file=output_file)
                 if has_target:
+                    ####
                     print("T-{}\t{}".format(sample_id, target_str), file=output_file)
 
             # Process top predictions
@@ -370,15 +371,18 @@ def _main(cfg: DictConfig, output_file):
                 if not cfg.common_eval.quiet:
                     score = hypo["score"] / math.log(2)  # convert to base 2
                     # original hypothesis (after tokenization and BPE)
+                    ####
                     print(
                         "H-{}\t{}\t{}".format(sample_id, score, hypo_str),
                         file=output_file,
                     )
                     # detokenized hypothesis
+                    ####
                     print(
                         "D-{}\t{}\t{}".format(sample_id, score, detok_hypo_str),
                         file=output_file,
                     )
+                    ####
                     print(
                         "P-{}\t{}".format(
                             sample_id,

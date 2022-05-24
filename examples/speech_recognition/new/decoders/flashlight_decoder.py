@@ -25,6 +25,8 @@ from typing import List
 from .decoder_config import FlashlightDecoderConfig
 from .base_decoder import BaseDecoder
 
+from fairseq.data.data_utils import post_process
+
 try:
     from flashlight.lib.text.decoder import (
         LM,
@@ -152,8 +154,6 @@ class KenLMDecoder(BaseDecoder):
 
             nbest_results = results[: self.nbest]
 
-            # import pdb; pdb.set_trace()
-
             hypos.append(
                 [
                     {
@@ -162,14 +162,13 @@ class KenLMDecoder(BaseDecoder):
                         "am_score": result.amScore,
                         "lm_score": result.lmScore,
                         "timesteps": self.get_timesteps(result.tokens),
-                        "words": [
-                            self.word_dict.get_entry(x) for x in result.words if x >= 0
-                        ],
+                        "words": [self.word_dict.get_entry(x) for x in result.words if x >= 0],
                     }
                     for result in nbest_results
                 ]
             )
-        # import pdb; pdb.set_trace()
+
+            # import pdb; pdb.set_trace()
         return hypos
 
 
@@ -201,6 +200,14 @@ class FairseqLM(LM):
 
         self.states = {}
         self.stateq = deque()
+
+    def optimize_model(self, model: FairseqModel, model_cfg) -> None:
+        model.make_generation_fast_()
+        if (model_cfg.common.fp16) and (torch.cuda.get_device_capability(0)[0] > 6):
+            model.half()
+        if not self.cfg.common.cpu:
+            model.cuda()
+        model.eval()
 
     def start(self, start_with_nothing: bool) -> LMState:
         state = LMState()
@@ -360,7 +367,18 @@ class FairseqLMDecoder(BaseDecoder):
                     word_idx = self.word_dict.index(word)
                     _, score = self.lm.score(start_state, word_idx, no_cache=True)
 
+                '''
+                (Pdb) word; word_idx; spelling
+                'zwilling'
+                221451
+                ['Z', 'W', 'I', 'L', 'L', 'I', 'N', 'G', '|']
+
+                (Pdb) tgt_dict.index(spelling[0])                                                                                                     
+                31
+                '''
+
                 for spelling in spellings:
+                    # import pdb; pdb.set_trace()
                     spelling_idxs = [tgt_dict.index(token) for token in spelling]
                     assert (
                         tgt_dict.unk() not in spelling_idxs
@@ -409,17 +427,37 @@ class FairseqLMDecoder(BaseDecoder):
                 self.decoder_opts, self.lm, self.silence, self.blank, []
             )
 
+    def get_timesteps(self, token_idxs: List[int]) -> List[int]:
+        timesteps = []
+        for i, token_idx in enumerate(token_idxs):
+            if token_idx == self.blank:
+                continue
+            if i == 0 or token_idx != token_idxs[i-1]:
+                timesteps.append(i)
+        return timesteps
+
     def decode(
         self,
         emissions: torch.FloatTensor,
+        # post_process = False,
     ) -> List[List[Dict[str, torch.LongTensor]]]:
         B, T, N = emissions.size()
         hypos = []
 
         def make_hypo(result: DecodeResult) -> Dict[str, Any]:
+
+            tokens = self.get_tokens(result.tokens)
+            timesteps = self.get_timesteps(result.tokens)
+            # hyp_pieces = self.tgt_dict.string(tokens.int().cpu())
+            # hyp_words = post_process(hyp_pieces, 'letter')
+            
             hypo = {
-                "tokens": self.get_tokens(result.tokens),
+                "tokens": tokens,
                 "score": result.score,
+                "am_score": result.amScore,
+                "lm_score": result.lmScore,
+                "timesteps": timesteps,
+                # "words": hyp_words,
             }
             if self.lexicon:
                 hypo["words"] = [
@@ -427,6 +465,9 @@ class FairseqLMDecoder(BaseDecoder):
                     for x in result.words
                     if x >= 0
                 ]
+
+            # import pdb; pdb.set_trace()
+
             return hypo
 
         for b in range(B):

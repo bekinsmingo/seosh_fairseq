@@ -332,6 +332,17 @@ class AudioFinetuningTask(AudioPretrainingTask):
     def _inference_with_bleu(self, generator, sample, model):
         import sacrebleu
 
+        # # Handle tokenization and BPE
+        # tokenizer = task.build_tokenizer(cfg.tokenizer)
+        # bpe = task.build_bpe(cfg.bpe)
+
+        # def decode_fn(x):
+        #     if bpe is not None:
+        #         x = bpe.decode(x)
+        #     if tokenizer is not None:
+        #         x = tokenizer.decode(x)
+        #     return x
+
         def decode(toks, is_ref):
             s = self.target_dictionary.string(
                 toks.int().cpu(),
@@ -345,6 +356,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
             )
             if self.tokenizer:
                 s = self.tokenizer.decode(s)
+            s = s.replace(' ','').replace('|',' ')
             return s
 
         gen_out = self.inference_step(generator, [model], sample)
@@ -360,6 +372,8 @@ class AudioFinetuningTask(AudioPretrainingTask):
         if self.cfg.eval_bleu_print_samples:
             logger.info("H-{} {}".format(sample["id"][0], hyps[0]))
             logger.info("T-{} {}".format(sample["id"][0], refs[0]))
+            # logger.info("H-{} {}".format(sample["id"][0], (''.join(hyps[0])).replace('|',' ')))
+            # logger.info("T-{} {}".format(sample["id"][0], (''.join(refs[0])).replace('|',' ')))
 
         eval_tokenization = "none" if self.cfg.eval_tokenized_bleu else "13a"
         return sacrebleu.corpus_bleu(hyps, [refs], tokenize=eval_tokenization)
