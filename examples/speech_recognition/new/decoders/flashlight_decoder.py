@@ -59,8 +59,9 @@ class KenLMDecoder(BaseDecoder):
         self.nbest = cfg.nbest
         self.unitlm = cfg.unitlm
 
-        if cfg.lexicon:
-            self.lexicon = load_words(cfg.lexicon)
+        self.lexicon = load_words(cfg.lexicon) if cfg.lexicon else None
+
+        if self.lexicon:
             self.word_dict = create_word_dict(self.lexicon)
             self.unk_word = self.word_dict.get_index("<unk>")
 
@@ -147,28 +148,44 @@ class KenLMDecoder(BaseDecoder):
     ) -> List[List[Dict[str, torch.LongTensor]]]:
         B, T, N = emissions.size()
         hypos = []
-        
+
         for b in range(B):
             emissions_ptr = emissions.data_ptr() + 4 * b * emissions.stride(0)
             results = self.decoder.decode(emissions_ptr, T, N)
 
             nbest_results = results[: self.nbest]
 
-            hypos.append(
-                [
-                    {
+            # hypos.append(
+            #     [
+            #         {
+            #             "tokens": self.get_tokens(result.tokens),
+            #             "score": result.score,
+            #             "am_score": result.amScore,
+            #             "lm_score": result.lmScore,
+            #             "timesteps": self.get_timesteps(result.tokens),
+            #             "words": [self.word_dict.get_entry(x) for x in result.words if x >= 0],
+            #         }
+            #         for result in nbest_results
+            #     ]
+            # )
+
+            tmp_hypos = []
+            for result in nbest_results:
+                tmp = {
                         "tokens": self.get_tokens(result.tokens),
                         "score": result.score,
                         "am_score": result.amScore,
                         "lm_score": result.lmScore,
                         "timesteps": self.get_timesteps(result.tokens),
-                        "words": [self.word_dict.get_entry(x) for x in result.words if x >= 0],
+                        # "words": [self.word_dict.get_entry(x) for x in result.words if x >= 0],
                     }
-                    for result in nbest_results
-                ]
-            )
 
-            # import pdb; pdb.set_trace()
+                if self.lexicon:
+                    tmp["words"] = [self.word_dict.get_entry(x) for x in result.words if x >= 0]
+                
+                tmp_hypos.append(tmp)
+            hypos.append(tmp_hypos)
+
         return hypos
 
 
@@ -183,7 +200,7 @@ FairseqLMState = namedtuple(
 
 
 class FairseqLM(LM):
-    def __init__(self, dictionary: Dictionary, model: FairseqModel) -> None:
+    def __init__(self, dictionary: Dictionary, model: FairseqModel, model_cfg) -> None:
         super().__init__()
 
         self.dictionary = dictionary
@@ -193,19 +210,31 @@ class FairseqLM(LM):
         self.save_incremental = False  # this currently does not work properly
         self.max_cache = 20_000
 
-        if torch.cuda.is_available():
-            model.cuda()
-        model.eval()
-        model.make_generation_fast_()
+        # if torch.cuda.is_available():
+        #     model.cuda()
+        # model.eval()
+        # model.make_generation_fast_()
+
+        self.optimize_model(model, model_cfg)
 
         self.states = {}
         self.stateq = deque()
 
+        self.use_fp16 = False
+
+    def apply_half(self, t):
+        if t.dtype is torch.float32:
+            return t.to(dtype=torch.half)
+        return t
+
     def optimize_model(self, model: FairseqModel, model_cfg) -> None:
+        if torch.cuda.is_available():
+            model.cuda()
         model.make_generation_fast_()
+        # model.half()
         if (model_cfg.common.fp16) and (torch.cuda.get_device_capability(0)[0] > 6):
             model.half()
-        if not self.cfg.common.cpu:
+        if not model_cfg.common.cpu:
             model.cuda()
         model.eval()
 
@@ -213,9 +242,25 @@ class FairseqLM(LM):
         state = LMState()
         prefix = torch.LongTensor([[self.dictionary.eos()]])
         incremental_state = {} if self.save_incremental else None
+
+        model_input = prefix.cuda()
+        if self.use_fp16:
+            model_input = apply_to_sample(self.apply_half, model_input)
+            if incremental_state is not None : incremental_state = apply_to_sample(self.apply_half, incremental_state)
+
         with torch.no_grad():
-            res = self.model(prefix.cuda(), incremental_state=incremental_state)
+            # res = self.model(prefix.cuda(), incremental_state=incremental_state)
+            res = self.model(model_input, incremental_state=incremental_state)
             probs = self.model.get_normalized_probs(res, log_probs=True, sample=None)
+
+        # import pdb; pdb.set_trace()
+        '''
+        (Pdb) state
+        <flashlight.lib.text.flashlight_lib_text_decoder.LMState object at 0x7ff98aef3630>
+        (Pdb) prefix
+        tensor([[2]])
+        (Pdb) incremental_state
+        '''
 
         if incremental_state is not None:
             incremental_state = apply_to_sample(lambda x: x.cpu(), incremental_state)
@@ -267,13 +312,49 @@ class FairseqLM(LM):
                 elif self.save_incremental:
                     new_incremental_state = {}
 
+                model_input = torch.from_numpy(curr_state.prefix).cuda()
+
+                if self.use_fp16:
+                    model_input = apply_to_sample(self.apply_half, model_input)
+                    new_incremental_state = apply_to_sample(self.apply_half, new_incremental_state)
+
                 res = self.model(
-                    torch.from_numpy(curr_state.prefix).cuda(),
+                    model_input,
                     incremental_state=new_incremental_state,
                 )
                 probs = self.model.get_normalized_probs(
                     res, log_probs=True, sample=None
                 )
+
+                # import pdb; pdb.set_trace()
+
+                '''
+                (Pdb) res[0].size()
+                torch.Size([1, 2, 1280])
+                (Pdb) probs.size()
+                torch.Size([1, 2, 221456])
+
+                (Pdb) res[0]
+                tensor([[[ 0.4419,  0.5895,  0.3985,  ..., -0.3235,  1.1520, -0.2799],
+                        [-0.6794,  0.1114, -0.7551,  ..., -0.0956,  1.0965,  0.8400]]],
+                    device='cuda:0')
+                (Pdb) probs
+                tensor([[[-19.0807, -18.9404,  -9.6942,  ..., -19.0641, -17.3400, -18.7727],
+                        [-21.0898, -21.5866, -10.0560,  ..., -24.1210, -19.8068, -21.7676]]],
+                    device='cuda:0')
+
+                if fp16 applied
+
+                (Pdb) res
+                (tensor([[[ 0.4414,  0.5898,  0.3975,  ..., -0.3232,  1.1504, -0.2800],
+                        [-0.6797,  0.1121, -0.7554,  ..., -0.0955,  1.0957,  0.8398]]],
+                    device='cuda:0', dtype=torch.float16), {'attn': [None], 'inner_states': [tensor([[[ 0.0898, -0.0200,  0.2417,  ..., -0.4814, -0
+                .1650, -0.3867]],
+                (Pdb) probs
+                tensor([[[-19.0781, -18.9375,  -9.6953,  ..., -19.0625, -17.3438, -18.7812],
+                        [-21.0781, -21.5781, -10.0547,  ..., -24.1250, -19.8125, -21.7812]]],
+                    device='cuda:0', dtype=torch.float16)
+                '''
 
                 if new_incremental_state is not None:
                     new_incremental_state = apply_to_sample(
@@ -354,7 +435,7 @@ class FairseqLMDecoder(BaseDecoder):
 
         self.word_dict = task.dictionary
         self.unk_word = self.word_dict.unk()
-        self.lm = FairseqLM(self.word_dict, model)
+        self.lm = FairseqLM(self.word_dict, model, lm_args)
 
         if self.lexicon:
             start_state = self.lm.start(False)

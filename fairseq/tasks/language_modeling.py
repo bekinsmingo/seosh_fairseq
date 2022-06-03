@@ -112,6 +112,11 @@ class LanguageModelingConfig(FairseqDataclass):
     use_plasma_view: bool = II("common.use_plasma_view")
     plasma_path: str = II("common.plasma_path")
 
+    ## added
+    max_source_positions: Optional[int] = field(
+        default=None, metadata={"help": "max number of tokens in the source sequence"}
+    )
+
 
 @register_task("language_modeling", dataclass=LanguageModelingConfig)
 class LanguageModelingTask(LegacyFairseqTask):

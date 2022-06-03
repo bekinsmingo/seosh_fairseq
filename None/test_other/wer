@@ -1,0 +1,26 @@
+WER: 3.347152436811035
+err / num_ref_words = 1752 / 52343
+
+_name: null
+nbest: 50
+unitlm: false
+lmpath: /mnt/clova_speech/users/seosh/librispeech_model/decoder/lm_librispeech_word_transformer/lm_librispeech_word_transformer.pt
+lexicon: /mnt/clova_speech/users/seosh/librispeech_model/w2v2_transformer_lm_lexicon.lexicon
+beam: 500
+beamthreshold: 15.0
+beamsizetoken: 10
+wordscore: -0.31
+unkweight: -.inf
+silweight: 0.0
+lmweight: 0.9
+rescoring: false
+rescoringweight: 2.0
+rescoringwordlenweight: 2.0
+rescoringlmpath: null
+saveresult: false
+saveresultpath: null
+usedumpedbeam: false
+usedumpedbeampath: null
+type: fairseqlm
+unique_wer_file: false
+results_path: null

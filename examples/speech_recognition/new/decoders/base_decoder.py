@@ -48,11 +48,11 @@ class BaseDecoder:
 
         encoder_out = model(**encoder_input)
 
-        # emissions = model.get_normalized_probs(encoder_out, log_probs=True)
         if hasattr(model, "get_logits"):
             emissions = model.get_logits(encoder_out)
         else:
             emissions = model.get_normalized_probs(encoder_out, log_probs=True)
+        # emissions = model.get_normalized_probs(encoder_out, log_probs=True)
         '''
         (Pdb) encoder_out['encoder_out'].transpose(0, 1)[0][0]
         tensor([ 15.5281, -13.3430, -13.4655, -13.3544,  -0.2461,  -0.5708,  -1.1782,
