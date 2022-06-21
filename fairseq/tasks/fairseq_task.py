@@ -298,8 +298,7 @@ class FairseqTask(object):
             max_sentences=max_sentences,
             required_batch_size_multiple=required_batch_size_multiple,
         )
-
-        # import pdb; pdb.set_trace()
+        reuse_dataloader = getattr(self.cfg, "reuse_dataloader", True)
 
         # return a reusable, sharded iterator
         epoch_iter = iterators.EpochBatchIterator(
@@ -314,6 +313,7 @@ class FairseqTask(object):
             buffer_size=data_buffer_size,
             skip_remainder_batch=skip_remainder_batch,
             grouped_shuffling=grouped_shuffling,
+            reuse_dataloader=reuse_dataloader,
         )
 
         # import pdb; pdb.set_trace()
