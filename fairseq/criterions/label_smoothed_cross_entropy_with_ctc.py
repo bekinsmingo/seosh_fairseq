@@ -73,7 +73,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         ctc_loss = torch.tensor(0.0).type_as(ce_loss)
         if self.ctc_weight > 0.0:
             ctc_lprobs, ctc_lens = model.get_ctc_output(net_output, sample)
-            ctc_tgt, ctc_tgt_lens = model.get_ctc_target(sample)
+            ctc_tgt, ctc_tgt_lens = model.get_ctc_target(sample, self.s2t_src_joint_ctc)
             ctc_tgt_mask = lengths_to_mask(ctc_tgt_lens)
             ctc_tgt_flat = ctc_tgt.masked_select(ctc_tgt_mask)
             reduction = "sum" if reduce else "none"
