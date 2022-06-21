@@ -56,6 +56,8 @@ class KenLMDecoder(BaseDecoder):
     def __init__(self, cfg: FlashlightDecoderConfig, tgt_dict: Dictionary) -> None:
         super().__init__(tgt_dict)
 
+        self.cfg = cfg
+
         self.nbest = cfg.nbest
         self.unitlm = cfg.unitlm
 
@@ -406,6 +408,8 @@ class FairseqLMDecoder(BaseDecoder):
     def __init__(self, cfg: FlashlightDecoderConfig, tgt_dict: Dictionary) -> None:
         super().__init__(tgt_dict)
 
+        self.cfg = cfg
+
         self.nbest = cfg.nbest
         self.unitlm = cfg.unitlm
 
@@ -494,7 +498,7 @@ class FairseqLMDecoder(BaseDecoder):
 
             d = {w: [[w]] for w in tgt_dict.symbols}
             self.word_dict = create_word_dict(d)
-            # self.lm = KenLM(cfg.lmpath, self.word_dict)
+            # self.lm = KenLM(cfg.lmpath, self.word_dict
             self.decoder_opts = LexiconFreeDecoderOptions(
                 beam_size=cfg.beam,
                 beam_size_token=cfg.beamsizetoken or len(tgt_dict),

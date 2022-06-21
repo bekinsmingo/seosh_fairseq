@@ -11,6 +11,8 @@ from fairseq.data.dictionary import Dictionary
 from fairseq.models.fairseq_model import FairseqModel
 import time
 
+from fairseq import checkpoint_utils, distributed_utils, progress_bar, tasks, utils
+
 
 class BaseDecoder:
     def __init__(self, tgt_dict: Dictionary) -> None:
@@ -48,11 +50,22 @@ class BaseDecoder:
 
         encoder_out = model(**encoder_input)
 
+        if 'padding_mask' in encoder_out.keys():
+            ## in fairseq latest version, padding mask is renamed
+            if encoder_out['padding_mask'] is None:
+                output_lengths = [encoder_out['encoder_out'].size(0)]*encoder_out['encoder_out'].size(1)
+            else:
+                ## if all input sequences have same length, then output has no padding mask 
+                output_lengths = (~encoder_out['padding_mask']).sum(-1).tolist()
+        else:
+            output_lengths = (~encoder_out['encoder_padding_mask']).sum(-1).tolist()
+
         if hasattr(model, "get_logits"):
             emissions = model.get_logits(encoder_out)
         else:
             emissions = model.get_normalized_probs(encoder_out, log_probs=True)
-        # emissions = model.get_normalized_probs(encoder_out, log_probs=True)
+        # emissions = model.get_normalized_probs(encoder_out, log_probs=True) # log probability
+        
         '''
         (Pdb) encoder_out['encoder_out'].transpose(0, 1)[0][0]
         tensor([ 15.5281, -13.3430, -13.4655, -13.3544,  -0.2461,  -0.5708,  -1.1782,
@@ -72,7 +85,25 @@ class BaseDecoder:
                 -1.9456e+01, -1.8987e+01, -1.9644e+01, -2.1505e+01, -2.1203e+01,
                 -2.1591e+01, -2.0251e+01], device='cuda:0')
         '''
-        return emissions.transpose(0, 1).float().cpu().contiguous()
+        # return emissions.transpose(0, 1).float().cpu().contiguous()
+
+        if self.cfg.blankcollapsethreshold < 1.0:
+            # import pdb; pdb.set_trace()
+            emissions = self.collapse_blanks(emissions.transpose(0, 1).float().cpu().contiguous(), output_lengths, self.cfg.blankcollapsethreshold)
+            '''
+            (Pdb) emissions.size()
+            torch.Size([1725, 7, 32])
+            
+            (Pdb) self.collapse_blanks(emissions.transpose(0, 1).float().cpu().contiguous(), output_lengths, 0.99).transpose(0,1).size()
+            torch.Size([1175, 7, 32])
+            (Pdb) self.collapse_blanks(emissions.transpose(0, 1).float().cpu().contiguous(), output_lengths, 0.95).transpose(0,1).size()          
+            torch.Size([798, 7, 32])
+            (Pdb) self.collapse_blanks(emissions.transpose(0, 1).float().cpu().contiguous(), output_lengths, 0.9).transpose(0,1).size()
+            torch.Size([557, 7, 32])
+            '''
+            return emissions
+        else:
+            return emissions.transpose(0, 1).float().cpu().contiguous()
 
     def get_tokens(self, idxs: torch.IntTensor) -> torch.LongTensor:
         idxs = (g[0] for g in it.groupby(idxs))
@@ -84,3 +115,49 @@ class BaseDecoder:
         emissions: torch.FloatTensor,
     ) -> List[List[Dict[str, torch.LongTensor]]]:
         raise NotImplementedError
+
+
+
+    def collapse_blanks(self, emissions, output_lengths, blank_collapse_threshold, use_logit=True):
+
+        if use_logit:
+            blanks = (utils.softmax(emissions.transpose(0, 1), dim=-1)).transpose(0, 1)[:, :, self.blank] > blank_collapse_threshold
+            collapsed_emissions = torch.ones_like(emissions).type_as(emissions) * float("-inf")
+            collapsed_emissions[:,:,self.blank] = 0 # because we use logit, it should be 0
+        else:
+            blanks = emissions[:, :, self.blank] > blank_collapse_threshold
+            collapsed_emissions = torch.zeros_like(emissions).type_as(emissions)
+            collapsed_emissions[:,:,self.blank] = 1 # because we use exact prob, dummy timestep should get blank prob as 1 
+
+
+        for i in range(emissions.size(0)):
+            u, c = torch.unique_consecutive(blanks[i], dim=0, return_counts=True)
+            u = u.tolist()
+            c = c.tolist()
+            cc = []
+            first_blanks = 0
+            k = 0
+            for j in range(len(c)):
+                c[j] = min(c[j], output_lengths[i] - k)
+                if u[j]:    # if blank
+                    if j == 0:
+                        first_blanks = c[j]
+                    else:
+                        if j < len(c) - 1:
+                            cc.append(c[j])
+                else:
+                    cc += [1] * c[j]
+                k += c[j]
+                if k >= output_lengths[i]:
+                    break
+            if len(cc) == 0:    # case: every frame is a blank frame
+                cc = [0]
+                first_blanks = 0
+            org_index = torch.cumsum(torch.tensor(cc), dim=0) + first_blanks - 1
+            emission = emissions[i, org_index]
+            collapsed_emissions[i, :len(emission)] = emission
+            output_lengths[i] = len(emission)
+
+        collapsed_emissions = collapsed_emissions[:, :max(output_lengths)]
+
+        return collapsed_emissions

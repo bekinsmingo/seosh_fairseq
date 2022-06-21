@@ -38,6 +38,8 @@ class PyCTCDecoder(BaseDecoder):
 
         # import pdb; pdb.set_trace()
 
+        self.cfg = cfg
+
         self.labels = [k for k, v in tgt_dict.indices.items()]
         self.pyctcdecoder = build_ctcdecoder(
             labels = self.labels,

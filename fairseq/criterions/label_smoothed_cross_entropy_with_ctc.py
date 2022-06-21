@@ -21,11 +21,16 @@ import editdistance
 from fairseq.data.data_utils import post_process
 from fairseq.logging.meters import safe_round
 
+from omegaconf import II
+
 @dataclass
 class LabelSmoothedCrossEntropyWithCtcCriterionConfig(
     LabelSmoothedCrossEntropyCriterionConfig
 ):
     ctc_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
+    # ctc_weight: float = II("model.ctc_weight")
+    s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
+
     mwer_training: bool = field(default=False, metadata={"help": "mwer training with nbest hypos"})
     mwer_training_updates: int = field(default=10000, metadata={"help": "weight for CTC loss"})
 
@@ -44,6 +49,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         ctc_weight,
         mwer_training,
         mwer_training_updates,
+        s2t_src_joint_ctc,
     ):
         super().__init__(
             task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy
@@ -53,6 +59,12 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         self.mwer_training_updates = mwer_training_updates
         self.post_process = self.task.eval_wer_post_process
         self.blank_idx = 0
+
+        self.tgt_dict = self.task.target_dictionary
+
+        self.s2t_src_joint_ctc = s2t_src_joint_ctc
+        if self.s2t_src_joint_ctc:
+            self.s2t_src_dict = self.task.source_dictionary
 
     def forward(self, model, sample,reduce=True):
         net_output = model(**sample["net_input"])
@@ -86,6 +98,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             + ctc_loss * self.ctc_weight 
             + mwer_loss # argmax sampling, inplace operation  
         )
+
+        # import pdb; pdb.set_trace()
 
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
@@ -127,21 +141,19 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                 w_errs = 0
                 w_len = 0
                 wv_errs = 0
+
+                ctc_target = sample["target_label"] if "target_label" in sample else sample["target"], 
                 for lp, t, inp_l in zip(
                     lprobs_t,
-                    sample["target_label"]
-                    if "target_label" in sample
-                    else sample["target"],
+                    ctc_target,
                     input_lengths,
                 ):
                     ## only support greedy deconding, not ngram decoding
                     lp = lp[:inp_l].unsqueeze(0)
 
-                    p = (t != self.task.target_dictionary.pad()) & (
-                        t != self.task.target_dictionary.eos()
-                    )
+                    p = (t != self.s2t_src_dict.pad()) & (t != self.s2t_src_dict.eos()) if self.s2t_src_joint_ctc else (t != self.tgt_dict.pad()) & (t != self.tgt_dict.eos())
                     targ = t[p]
-                    targ_units = self.task.target_dictionary.string(targ)
+                    targ_units = self.s2t_src_dict.string(targ) if self.s2t_src_joint_ctc else self.tgt_dict.string(targ)
                     targ_units_arr = targ.tolist()
 
                     toks = lp.argmax(dim=-1).unique_consecutive()
@@ -152,7 +164,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
                     targ_words = post_process(targ_units, self.post_process).split()
 
-                    pred_units = self.task.target_dictionary.string(pred_units_arr)
+                    pred_units = self.s2t_src_dict.string(pred_units_arr) if self.s2t_src_joint_ctc else self.tgt_dict.string(pred_units_arr)
                     pred_words_raw = post_process(pred_units, self.post_process).split()
 
                     dist = editdistance.eval(pred_words_raw, targ_words)
@@ -167,7 +179,6 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                 logging_output["ctc_c_errors"] = c_err
                 logging_output["ctc_c_total"] = c_len
 
-            # import pdb; pdb.set_trace()
 
         return loss, sample_size, logging_output
 
@@ -175,7 +186,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         # this is currently not supported, because i can't find which part is non-differentiable
 
         def decode(toks):
-            s = self.task.target_dictionary.string(
+            s = self.tgt_dict.string(
                 toks.int().cpu(),
                 self.post_process,
                 escape_unk=True,
@@ -194,7 +205,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             
         mwer_loss = []
         for i, nbest_lists in enumerate(batch_nbest_lists):
-            ref_words = decode(utils.strip_pad(sample["target"][i], self.task.target_dictionary.pad()),).split()
+            ref_words = decode(utils.strip_pad(sample["target"][i], self.tgt_dict.pad()),).split()
             wers = []
             hypo_probs = []
 

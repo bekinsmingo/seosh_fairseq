@@ -109,3 +109,7 @@ class FlashlightDecoderConfig(FairseqDataclass):
     usedumpedbeampath: Optional[str] = field(
         default=None,
     )
+    blankcollapsethreshold: float = field(
+        default=1.0,
+        metadata={"help": ""},
+    )

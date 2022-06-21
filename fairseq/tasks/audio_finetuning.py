@@ -26,6 +26,7 @@ from ..logging import metrics
 
 from fairseq.optim.amp_optimizer import AMPOptimizer
 
+from omegaconf import MISSING, II, OmegaConf
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,17 @@ class AudioFinetuningConfig(AudioPretrainingConfig):
         },
     )
 
+    # s2t_src_joint_ctc: Optional[bool] = II("model.mask_other")
+    s2t_src_joint_ctc: bool = field(
+        default=False,
+        metadata={
+            "help": "tmp"
+        },
+    )
+    s2t_src_data: Optional[str] = field(
+        default=None, metadata={"help": "tmp"}
+    )
+
     # ## added for xlsr
     # multiple_train_files: bool = field(
     #     default=False,
@@ -150,16 +162,20 @@ class AudioFinetuningTask(AudioPretrainingTask):
         self.eval_wer_post_process = cfg.eval_wer_post_process
 
         self.state.add_factory("target_dictionary", self.load_target_dictionary)
+        if self.cfg.s2t_src_joint_ctc:
+            self.state.add_factory("source_dictionary", self.load_source_dictionary)
+        
+        # import pdb; pdb.set_trace()
 
     def load_target_dictionary(self):
         if self.cfg.labels:
             dict_path = os.path.join(self.cfg.data, f"dict.{self.cfg.labels}.txt")
-            # import pdb
-            # pdb.set_trace()
-            # '''
-            # (Pdb) len(Dictionary.load(dict_path))
-            # 32
-            # '''
+            return Dictionary.load(dict_path)
+        return None
+
+    def load_source_dictionary(self):
+        if self.cfg.labels:
+            dict_path = os.path.join(self.cfg.s2t_src_data, f"dict.{self.cfg.labels}.txt")
             return Dictionary.load(dict_path)
         return None
 
@@ -191,9 +207,29 @@ class AudioFinetuningTask(AudioPretrainingTask):
 
         process_label = LabelEncoder(self.target_dictionary)
 
+        s2t_src_labels = None
+        s2t_src_process_label = None
+        if self.cfg.s2t_src_joint_ctc:
+            data_path = self.cfg.s2t_src_data
+            label_path = os.path.join(data_path, f"{split}.{task_cfg.labels}")
+            skipped_indices = getattr(self.datasets[split], "skipped_indices", set())
+            text_compressor = TextCompressor(level=text_compression_level)
+            with open(label_path, "r") as f:
+                s2t_src_labels = [
+                    text_compressor.compress(l)
+                    for i, l in enumerate(f)
+                    if i not in skipped_indices
+                ]
+
+            assert len(s2t_src_labels) == len(self.datasets[split]), (
+                f"s2t soruce labels length ({len(s2t_src_labels)}) and dataset length "
+                f"({len(self.datasets[split])}) do not match"
+            )
+            s2t_src_process_label = LabelEncoder(self.target_dictionary)
+
         self.datasets[split] = AddTargetDataset(
-            self.datasets[split],
-            labels,
+            dataset=self.datasets[split],
+            labels=labels,
             pad=self.target_dictionary.pad(),
             eos=self.target_dictionary.eos(),
             batch_targets=True,
@@ -201,6 +237,8 @@ class AudioFinetuningTask(AudioPretrainingTask):
             label_len_fn=label_len_fn,
             add_to_input=task_cfg.get("autoregressive", False),
             text_compression_level=text_compression_level,
+            s2t_src_labels=s2t_src_labels,
+            s2t_src_process_label=s2t_src_process_label,
         )
 
         '''
@@ -227,6 +265,12 @@ class AudioFinetuningTask(AudioPretrainingTask):
         """Return the :class:`~fairseq.data.Dictionary` for the language
         model."""
         return self.state.target_dictionary
+
+    @property
+    def source_dictionary(self):
+        """Return the :class:`~fairseq.data.Dictionary` for the language
+        model."""
+        return self.state.source_dictionary
 
     def train_step(
         self, sample, model, criterion, optimizer, update_num, ignore_grad=False

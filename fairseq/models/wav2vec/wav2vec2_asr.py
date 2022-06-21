@@ -337,7 +337,10 @@ class Wav2Vec2Seq2SeqConfig(Wav2Vec2AsrConfig):
     )
 
     # ctc_weight: float = II("criterion.ctc_weight")
+    # ctc_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
 
+
+    s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
 
 def need_finetuning(ft_params, param_name):
     if ft_params == "all":
@@ -364,7 +367,8 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
         # import pdb; pdb.set_trace()
 
-        src_dict, tgt_dict = task.source_dictionary, task.target_dictionary
+        src_dict = task.source_dictionary if cfg.s2t_src_joint_ctc else None
+        tgt_dict = task.target_dictionary
 
         def build_embedding(dictionary, embed_dim):
             num_embeddings = len(dictionary)
@@ -374,7 +378,7 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
         decoder_embed_tokens = build_embedding(tgt_dict, cfg.decoder_embed_dim)
 
-        encoder = cls.build_encoder(cfg, tgt_dict)
+        encoder = cls.build_encoder(cfg, src_dict if cfg.s2t_src_joint_ctc and src_dict else tgt_dict)
         decoder = cls.build_decoder(cfg, tgt_dict, decoder_embed_tokens)
 
         return Wav2Vec2Seq2SeqModel(encoder, decoder)
@@ -435,8 +439,11 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
         decoder_out = self.decoder(encoder_out=encoder_out, **kwargs)
         return (decoder_out[0], decoder_out[1], encoder_out)
 
-    def get_ctc_target(self, sample: Optional[Dict[str, Tensor]]):
-        return sample["target"], sample["target_lengths"]
+    def get_ctc_target(self, sample: Optional[Dict[str, Tensor]], s2t_src_joint_ctc):
+        if s2t_src_joint_ctc:
+            return sample["target"], sample["target_lengths"]
+        else:
+            return sample["s2t_src_target"], sample["s2t_src_target_lengths"]
 
     def get_ctc_output(
         self,

@@ -23,6 +23,8 @@ class AddTargetDataset(BaseWrapperDataset):
         bos=None,
         add_bos_and_eos_to_input=False,
         text_compression_level=TextCompressionLevel.none,
+        s2t_src_labels=None,
+        s2t_src_process_label=None,
     ):
         super().__init__(dataset)
         self.labels = labels
@@ -36,20 +38,33 @@ class AddTargetDataset(BaseWrapperDataset):
         self.add_bos_and_eos_to_input = add_bos_and_eos_to_input
         self.text_compressor = TextCompressor(level=text_compression_level)
 
+        self.s2t_src_labels=s2t_src_labels
+        self.s2t_src_process_label=s2t_src_process_label
+
     def get_label(self, index, process_fn=None):
         lbl = self.labels[index]
+        lbl = self.text_compressor.decompress(lbl)
+        return lbl if process_fn is None else process_fn(lbl)
+
+    def get_s2t_src_label(self, index, process_fn=None):
+        lbl = self.s2t_src_labels[index]
         lbl = self.text_compressor.decompress(lbl)
         return lbl if process_fn is None else process_fn(lbl)
 
     def __getitem__(self, index):
         item = self.dataset[index]
         item["label"] = self.get_label(index, process_fn=self.process_label)
+        if self.s2t_src_labels:
+            item["s2t_src_label"] = self.get_s2t_src_label(index, process_fn=self.s2t_src_process_label)
         return item
 
     def size(self, index):
         sz = self.dataset.size(index)
         own_sz = self.label_len_fn(self.get_label(index))
+        if self.s2t_src_labels:
+            s2t_src_own_sz = len(self.get_s2t_src_label(index))
         return sz, own_sz
+
 
     def collater(self, samples):
         collated = self.dataset.collater(samples)
@@ -62,6 +77,10 @@ class AddTargetDataset(BaseWrapperDataset):
         else:
             target = [s["label"] for s in samples if s["id"] in indices]
 
+        if self.s2t_src_labels:
+            s2t_src_target = [s["s2t_src_label"] for s in samples if s["id"] in indices]
+
+
         if self.add_to_input:
             eos = torch.LongTensor([self.eos])
             prev_output_tokens = [torch.cat([eos, t], axis=-1) for t in target]
@@ -72,6 +91,12 @@ class AddTargetDataset(BaseWrapperDataset):
             collated["target_lengths"] = torch.LongTensor([len(t) for t in target])
             target = data_utils.collate_tokens(target, pad_idx=self.pad, left_pad=False)
             collated["ntokens"] = collated["target_lengths"].sum().item()
+
+            if self.s2t_src_labels:
+                collated["s2t_src_target_lengths"] = torch.LongTensor([len(t) for t in s2t_src_target])
+                s2t_src_target = data_utils.collate_tokens(s2t_src_target, pad_idx=self.pad, left_pad=False)
+                collated["s2t_src_ntokens"] = collated["s2t_src_target_lengths"].sum().item()
+
             # if getattr(collated["net_input"], "prev_output_tokens", None):
             if 'prev_output_tokens' in collated["net_input"].keys():
                 collated["net_input"]["prev_output_tokens"] = data_utils.collate_tokens(
@@ -81,9 +106,15 @@ class AddTargetDataset(BaseWrapperDataset):
                 )
         else:
             collated["ntokens"] = sum([len(t) for t in target])
+            if self.s2t_src_labels:
+                collated["s2t_src_ntokens"] = sum([len(t) for t in s2t_src_target])
 
         collated["target"] = target
-        
+        if self.s2t_src_labels:
+            collated["s2t_src_target"] = s2t_src_target
+
+        # import pdb; pdb.set_trace()
+
         return collated
 
     def filter_indices_by_size(self, indices, max_sizes):
