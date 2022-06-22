@@ -27,6 +27,7 @@ from ..logging import metrics
 from fairseq.optim.amp_optimizer import AMPOptimizer
 
 from omegaconf import MISSING, II, OmegaConf
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,19 @@ class AudioFinetuningConfig(AudioPretrainingConfig):
     )
     s2t_src_data: Optional[str] = field(
         default=None, metadata={"help": "tmp"}
+    )
+
+    max_source_positions: int = field(
+        default=sys.maxsize,
+        metadata={
+            "help": "tmp"
+        },
+    )
+    max_target_positions: int = field(
+        default=sys.maxsize,
+        metadata={
+            "help": "tmp"
+        },
     )
 
     # ## added for xlsr
@@ -336,6 +350,9 @@ class AudioFinetuningTask(AudioPretrainingTask):
             self.sequence_generator = self.build_generator([model], gen_args)
 
         return model
+
+    def max_positions(self):
+        return self.cfg.max_source_positions, self.cfg.max_target_positions
 
     def _inference_with_wer(self, generator, sample, model):
         import editdistance
