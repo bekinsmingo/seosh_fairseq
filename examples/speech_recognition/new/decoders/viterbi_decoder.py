@@ -13,6 +13,10 @@ from .base_decoder import BaseDecoder
 
 
 class ViterbiDecoder(BaseDecoder):
+    def __init__(self, cfg, tgt_dict) -> None:
+        super().__init__(tgt_dict)
+        self.cfg = cfg
+
     def decode(
         self,
         emissions: torch.FloatTensor,

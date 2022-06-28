@@ -697,9 +697,10 @@ class Trainer(object):
 
         '''
         (Pdb) self.task.max_positions() ; self.model.max_positions(); self.cfg.dataset.max_tokens
-        (9223372036854775807, 9223372036854775807)
-        (None, 2048)
-        3200000
+        (9223372036854775807, 9223372036854775807) # task
+        (None, 2048) # model
+        3200000 # batch size
+
         (Pdb) utils.resolve_max_positions(self.task.max_positions(),self.model.max_positions(),self.cfg.dataset.max_tokens)
         (3200000, 2048)
         '''

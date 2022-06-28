@@ -120,7 +120,11 @@ class KenLMDecoder(BaseDecoder):
                 criterion_type=CriterionType.CTC,
             )
             self.decoder = LexiconFreeDecoder(
-                self.decoder_opts, self.lm, self.silence, self.blank, []
+                self.decoder_opts, 
+                self.lm, 
+                self.silence, 
+                self.blank, 
+                []
             )
 
     def get_timesteps(self, token_idxs: List[int]) -> List[int]:
@@ -189,6 +193,8 @@ class KenLMDecoder(BaseDecoder):
             hypos.append(tmp_hypos)
 
         return hypos
+
+
 
 
 FairseqLMState = namedtuple(

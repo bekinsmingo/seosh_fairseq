@@ -19,7 +19,7 @@ def Decoder(
 
     if cfg.type == "viterbi":
         from .viterbi_decoder import ViterbiDecoder
-        return ViterbiDecoder(tgt_dict)
+        return ViterbiDecoder(cfg, tgt_dict)
     if cfg.type == "kenlm":
         from .flashlight_decoder import KenLMDecoder
         return KenLMDecoder(cfg, tgt_dict)
