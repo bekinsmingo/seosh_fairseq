@@ -100,8 +100,6 @@ class InferenceProcessor:
         self.cfg = cfg
         self.task = tasks.setup_task(cfg.task)
 
-        # import pdb; pdb.set_trace()
-
         self.use_fp16 = False
         self.use_cuda = (not cfg.common.cpu and not torch.cuda.is_available())
 
@@ -110,15 +108,12 @@ class InferenceProcessor:
         self.saved_cfg = saved_cfg
         self.tgt_dict = self.task.target_dictionary
 
-        # import pdb; pdb.set_trace()
-
         self.task.load_dataset(
             self.cfg.dataset.gen_subset,
             task_cfg=saved_cfg.task,
         )
-        # cfg.decoding.type = 'pyctcdecoder'
+
         self.generator = Decoder(cfg.decoding, self.tgt_dict)
-        # import pdb; pdb.set_trace()
         self.gen_timer = StopwatchMeter()
         self.gen_timer_for_rescoring = StopwatchMeter()
         self.wps_meter = TimeMeter()
@@ -140,22 +135,11 @@ class InferenceProcessor:
         self.rescoring_weight = cfg.decoding.rescoringweight
         self.rescoring_word_len_weight = cfg.decoding.rescoringwordlenweight
 
-        # self.general_rescoring = cfg.decoding.generalrescoring
-        # self.general_rescoring_weight = cfg.decoding.generalrescoringweight
-
         self.save_result = cfg.decoding.saveresult
         self.save_result_path = cfg.decoding.saveresultpath
 
-        # # original code
-        # logger.info("| loading rescoring lm model from {}".format(cfg.decoding.rescoringlmpath))
-        # path, checkpoint = os.path.split(self.cfg.decoding.rescoringlmpath)
-        # dict_path = os.path.join(path,'dict.txt')
-        # self.rescoring_dict = Dictionary.load(dict_path)
-        # self.rescoring_model = load_rescoring_model(self.cfg.decoding.rescoringlmpath, 'transformer', dict_path)
-
         if self.rescoring : 
                 
-            # my model
             print('cfg.decoding.rescoringlmpath',cfg.decoding.rescoringlmpath)
             path, checkpoint = os.path.split(cfg.decoding.rescoringlmpath)
             dict_path = os.path.join(path,'dict.txt')
@@ -227,7 +211,6 @@ class InferenceProcessor:
             #     self.rescoring_dict = AutoTokenizer.from_pretrained(model_name)
             #     self.rescoring_dict.pad_token = self.rescoring_dict.eos_token
 
-            # import pdb; pdb.set_trace()
 
     def __enter__(self) -> "InferenceProcessor":
         if self.cfg.decoding.results_path is not None:
@@ -302,8 +285,6 @@ class InferenceProcessor:
 
     def optimize_model(self, model: FairseqModel, model_cfg) -> None:
         model.make_generation_fast_()
-        # model.half()
-        # self.use_fp16 = True
         if (model_cfg.common.fp16) and (torch.cuda.get_device_capability(0)[0] > 6):
             model.half()
             self.use_fp16 = True
@@ -321,14 +302,8 @@ class InferenceProcessor:
             strict=(self.cfg.checkpoint.checkpoint_shard_count == 1),
             num_shards=self.cfg.checkpoint.checkpoint_shard_count,
         )
-        # import pdb; pdb.set_trace()
         
         '''
-        (Pdb) self.cfg.common.fp16
-        False
-        (Pdb) saved_cfg.common.fp16
-        True
-
         (Pdb) models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight.dtype                                                                            
         torch.float32
         (Pdb) models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight
@@ -341,8 +316,8 @@ class InferenceProcessor:
                 [ 0.1456,  0.1434, -0.0168,  ..., -0.1377,  0.0690, -0.1309],
                 [-0.0152,  0.0212, -0.0604,  ...,  0.1694, -0.1129, -0.1088]],
             requires_grad=True)
-        (Pdb) models[0].half()
 
+        (Pdb) models[0].half()
         (Pdb) models[0].w2v_encoder.w2v_model.encoder.layers[0].fc1.weight
         Parameter containing:
         tensor([[ 0.0888,  0.2118, -0.1012,  ...,  0.0049,  0.1906,  0.1567],
@@ -362,7 +337,6 @@ class InferenceProcessor:
         return models, saved_cfg
 
     def get_dataset_itr(self, disable_iterator_cache: bool = False) -> None:
-        # import pdb; pdb.set_trace()
         return self.task.get_batch_iterator(
             dataset=self.task.dataset(self.cfg.dataset.gen_subset),
             max_tokens=self.cfg.dataset.max_tokens,
@@ -384,7 +358,6 @@ class InferenceProcessor:
         prefix: Optional[str] = None,
         default_log_format: str = "tqdm",
     ) -> BaseProgressBar:
-        # import pdb; pdb.set_trace()
         return progress_bar.progress_bar(
             iterator=self.get_dataset_itr(),
             log_format=self.cfg.common.log_format,
@@ -1090,8 +1063,6 @@ def predict_batch_for_rescoring_roberta_pll(sentences, model, fairseq_dict, max_
         with torch.no_grad():
             y = model.model(x)[0]
             logprobs = torch.nn.functional.log_softmax(y, 2).detach().cpu().numpy()
-        
-        # import pdb; pdb.set_trace()
 
         '''
         torch.return_types.max(
@@ -1153,15 +1124,12 @@ def predict_batch_for_rescoring_roberta_pll(sentences, model, fairseq_dict, max_
 
 @hydra.main(config_path=config_path, config_name="infer")
 def hydra_main(cfg: InferConfig) -> Union[float, Tuple[float, Optional[float]]]:
-    # import pdb; pdb.set_trace()
     container = OmegaConf.to_container(cfg, resolve=True, enum_to_str=True)
     cfg = OmegaConf.create(container)
     OmegaConf.set_struct(cfg, True)
 
     if cfg.common.reset_logging:
         reset_logging()
-    
-    # import pdb;pdb.set_trace()
 
     utils.import_user_module(cfg.common)
 
@@ -1208,8 +1176,6 @@ def cli_main() -> None:
         if is_dataclass(InferConfig.__dataclass_fields__[k].type):
             v = InferConfig.__dataclass_fields__[k].default
             cs.store(name=k, node=v)
-
-    # import pdb; pdb.set_trace()
 
     hydra_main()  # pylint: disable=no-value-for-parameter
 

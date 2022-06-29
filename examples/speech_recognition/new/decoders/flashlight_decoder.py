@@ -27,6 +27,8 @@ from .base_decoder import BaseDecoder
 
 from fairseq.data.data_utils import post_process
 
+from pdb import set_trace as T
+
 try:
     from flashlight.lib.text.decoder import (
         LM,
@@ -223,12 +225,13 @@ class FairseqLM(LM):
         # model.eval()
         # model.make_generation_fast_()
 
+        self.use_fp16 = False
         self.optimize_model(model, model_cfg)
 
         self.states = {}
         self.stateq = deque()
 
-        self.use_fp16 = False
+        self.use_bidirectional_lm=False
 
     def apply_half(self, t):
         if t.dtype is torch.float32:
@@ -239,9 +242,9 @@ class FairseqLM(LM):
         if torch.cuda.is_available():
             model.cuda()
         model.make_generation_fast_()
-        # model.half()
         if (model_cfg.common.fp16) and (torch.cuda.get_device_capability(0)[0] > 6):
             model.half()
+            self.use_fp16 = True
         if not model_cfg.common.cpu:
             model.cuda()
         model.eval()
@@ -261,7 +264,6 @@ class FairseqLM(LM):
             res = self.model(model_input, incremental_state=incremental_state)
             probs = self.model.get_normalized_probs(res, log_probs=True, sample=None)
 
-        # import pdb; pdb.set_trace()
         '''
         (Pdb) state
         <flashlight.lib.text.flashlight_lib_text_decoder.LMState object at 0x7ff98aef3630>
@@ -334,7 +336,6 @@ class FairseqLM(LM):
                     res, log_probs=True, sample=None
                 )
 
-                # import pdb; pdb.set_trace()
 
                 '''
                 (Pdb) res[0].size()
@@ -435,8 +436,6 @@ class FairseqLMDecoder(BaseDecoder):
         with open_dict(lm_args.task):
             lm_args.task.data = osp.dirname(cfg.lmpath)
 
-        # import pdb; pdb.set_trace()
-
         task = tasks.setup_task(lm_args.task)
         model = task.build_model(lm_args.model)
         model.load_state_dict(checkpoint["model"], strict=False)
@@ -469,7 +468,6 @@ class FairseqLMDecoder(BaseDecoder):
                 '''
 
                 for spelling in spellings:
-                    # import pdb; pdb.set_trace()
                     spelling_idxs = [tgt_dict.index(token) for token in spelling]
                     assert (
                         tgt_dict.unk() not in spelling_idxs
@@ -557,8 +555,6 @@ class FairseqLMDecoder(BaseDecoder):
                     if x >= 0
                 ]
 
-            # import pdb; pdb.set_trace()
-
             return hypo
 
         for b in range(B):
@@ -570,3 +566,14 @@ class FairseqLMDecoder(BaseDecoder):
             self.lm.empty_cache()
 
         return hypos
+
+    def get_greedy(
+        self,
+        emissions: torch.FloatTensor,
+    ) -> List[List[Dict[str, torch.LongTensor]]]:
+    
+        def get_pred(e):
+            toks = e.argmax(dim=-1).unique_consecutive()
+            return toks[toks != self.blank]
+
+        return [[{"tokens": get_pred(x), "score": 0}] for x in emissions]

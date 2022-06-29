@@ -441,9 +441,9 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
     def get_ctc_target(self, sample: Optional[Dict[str, Tensor]], s2t_src_joint_ctc):
         if s2t_src_joint_ctc:
-            return sample["target"], sample["target_lengths"]
-        else:
             return sample["s2t_src_target"], sample["s2t_src_target_lengths"]
+        else:
+            return sample["target"], sample["target_lengths"]
 
     def get_ctc_output(
         self,
