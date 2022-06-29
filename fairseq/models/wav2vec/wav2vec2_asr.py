@@ -35,6 +35,7 @@ from fairseq.tasks import FairseqTask
 from typing import Dict, List, Optional, Tuple
 from torch import Tensor
 
+from pdb import set_trace as Tra
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,7 @@ class Wav2VecCtc(BaseFairseqModel):
     @classmethod
     def build_model(cls, cfg: Wav2Vec2CtcConfig, task: FairseqTask):
         """Build a new model instance."""
-        # import pdb; pdb.set_trace()
+
         ## 왜 xlsr-ctc 하는데 여기서 터지니
         '''
         (Pdb) len(task.target_dictionary)
@@ -268,7 +269,6 @@ class Wav2VecCtc(BaseFairseqModel):
     def forward(self, **kwargs):
         x = self.w2v_encoder(**kwargs)
         # dict_keys(['encoder_out', 'padding_mask', 'layer_results'])
-        # import pdb; pdb.set_trace()
         return x
 
 
@@ -365,7 +365,6 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
             cfg.autoregressive
         ), "Please set task.autoregressive=true for seq2seq asr models"
 
-        # import pdb; pdb.set_trace()
 
         src_dict = task.source_dictionary if cfg.s2t_src_joint_ctc else None
         tgt_dict = task.target_dictionary
@@ -389,7 +388,6 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
     @classmethod
     def build_decoder(cls, cfg: Wav2Vec2Seq2SeqConfig, tgt_dict, embed_tokens):
-        # import pdb; pdb.set_trace()
         if cfg.load_pretrained_decoder_from:
             _cfg = copy.deepcopy(cfg)
             # if cfg.adaptor_proj or cfg.encoder_embed_dim:  # not V0 arch
@@ -449,27 +447,68 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
         self,
         net_output: Tuple[Tensor, Optional[Dict[str, List[Optional[Tensor]]]]],
         sample: Optional[Dict[str, Tensor]],
+        inter_ctc=False,
+        only_inter_ctc=False,
     ):
-        # import pdb; pdb.set_trace()
-        # encoder_out = net_output[1]["encoder_out"]["encoder_out"][0]
-        encoder_out = net_output[2]["encoder_out"]
-        logits = self.encoder.ctc_proj(encoder_out)  # T x B x C
-        '''
-        (Pdb) logits.size()
-        torch.Size([538, 7, 10001])
-        (Pdb) encoder_out.size()
-        torch.Size([538, 7, 768])
-        '''
-        out = utils.log_softmax(logits.float(), dim=-1)
-        # padding_mask = net_output[1]["encoder_out"]["encoder_padding_mask"]
-        padding_mask = net_output[2]["padding_mask"]
-        lens = out.new_full((out.shape[1],), out.shape[0]).long()
-        # import pdb; pdb.set_trace()
-        if padding_mask is not None :
-            if len(padding_mask) > 0:
-                lens -= padding_mask[0].sum(dim=-1)
-        # import pdb; pdb.set_trace()
-        return out, lens
+        # This is for speech translation
+        if only_inter_ctc:
+            num_layer = len(net_output[2]["layer_results"])
+            encoder_out = net_output[2]["layer_results"][num_layer//2][0]
+            if self.encoder.w2v_model.encoder.layer_norm_first:
+                encoder_out = encoder_out.transpose(0,1)
+                encoder_out = self.encoder.w2v_model.encoder.layer_norm(encoder_out)
+                encoder_out = encoder_out.transpose(0,1)
+
+            encoder_out = self.encoder.final_dropout(encoder_out)
+            if 'proj.weight' in self.encoder.state_dict().keys():
+                encoder_out = self.encoder.proj(encoder_out)
+
+            logits = self.encoder.ctc_proj(encoder_out)  # T x B x C
+            out = utils.log_softmax(logits.float(), dim=-1)      
+
+            padding_mask = net_output[2]["padding_mask"]
+            lens = out.new_full((out.shape[1],), out.shape[0]).long()
+
+            if padding_mask is not None :
+                if len(padding_mask) > 0:
+                    lens -= padding_mask[0].sum(dim=-1)
+            return out, None, lens
+
+        else:
+            # encoder_out = net_output[1]["encoder_out"]["encoder_out"][0]
+            encoder_out = net_output[2]["encoder_out"]
+            logits = self.encoder.ctc_proj(encoder_out)  # T x B x C
+            out = utils.log_softmax(logits.float(), dim=-1)
+
+            if inter_ctc:
+                num_layer = len(net_output[2]["layer_results"])
+                inter_encoder_out = net_output[2]["layer_results"][num_layer//2][0]
+                if self.encoder.w2v_model.encoder.layer_norm_first:
+                    inter_encoder_out = inter_encoder_out.transpose(0,1)
+                    inter_encoder_out = self.encoder.w2v_model.encoder.layer_norm(inter_encoder_out)
+                    inter_encoder_out = inter_encoder_out.transpose(0,1)
+
+                inter_encoder_out = self.encoder.final_dropout(inter_encoder_out)
+                if 'proj.weight' in self.encoder.state_dict().keys():
+                    inter_encoder_out = self.encoder.proj(inter_encoder_out)
+
+                inter_logits = self.encoder.ctc_proj(inter_encoder_out)
+                inter_out = utils.log_softmax(inter_logits.float(), dim=-1)
+            
+            # Tra()
+
+            # padding_mask = net_output[1]["encoder_out"]["encoder_padding_mask"]
+            padding_mask = net_output[2]["padding_mask"]
+            lens = out.new_full((out.shape[1],), out.shape[0]).long()
+
+            if padding_mask is not None :
+                if len(padding_mask) > 0:
+                    lens -= padding_mask[0].sum(dim=-1)
+
+            if inter_ctc :
+                return out, inter_out, lens 
+            else :
+                return out, None, lens
         
     def upgrade_state_dict_named(self, state_dict, name):
         super().upgrade_state_dict_named(state_dict, name)
@@ -580,8 +619,6 @@ class Wav2VecEncoder(FairseqEncoder):
     def __init__(self, cfg: Wav2Vec2AsrConfig, output_size=None, ctc_proj_dim=None):
         self.apply_mask = cfg.apply_mask
 
-        # import pdb; pdb.set_trace()
-
         arg_overrides = {
             "dropout": cfg.dropout,
             "activation_dropout": cfg.activation_dropout,
@@ -606,7 +643,6 @@ class Wav2VecEncoder(FairseqEncoder):
             "offload_activations": cfg.offload_activations,
             "min_params_to_wrap": cfg.min_params_to_wrap,
         }
-        # import pdb; pdb.set_trace()
 
         if cfg.w2v_args is None:
             state = checkpoint_utils.load_checkpoint_to_cpu(cfg.w2v_path, arg_overrides)
@@ -616,7 +652,6 @@ class Wav2VecEncoder(FairseqEncoder):
             w2v_args.criterion = None
             w2v_args.lr_scheduler = None
             cfg.w2v_args = w2v_args
-            # import pdb; pdb.set_trace()
 
             logger.info(w2v_args)
 
@@ -625,8 +660,6 @@ class Wav2VecEncoder(FairseqEncoder):
             w2v_args = cfg.w2v_args
             if isinstance(w2v_args, Namespace):
                 cfg.w2v_args = w2v_args = convert_namespace_to_omegaconf(w2v_args)
-
-        # import pdb; pdb.set_trace()
 
         model_normalized = w2v_args.task.get(
             "normalize", w2v_args.model.get("normalize", False)
@@ -643,7 +676,7 @@ class Wav2VecEncoder(FairseqEncoder):
         # w2v_args.task.data = cfg.data
         # if 'eval_wer' in w2v_args.task.keys():
         #     w2v_args.task._name = 'audio_finetuning'
-        # import pdb; pdb.set_trace()
+
         task = tasks.setup_task(w2v_args.task)
         model = task.build_model(w2v_args.model, from_checkpoint=True)
 
@@ -721,8 +754,6 @@ class Wav2VecEncoder(FairseqEncoder):
 
     def forward(self, source, padding_mask, **kwargs):
 
-        # import pdb; pdb.set_trace()
-
         w2v_args = {
             "source": source,
             "padding_mask": padding_mask,
@@ -732,8 +763,6 @@ class Wav2VecEncoder(FairseqEncoder):
         ft = self.freeze_finetune_updates <= self.num_updates
 
         with torch.no_grad() if not ft else contextlib.ExitStack():
-
-            # import pdb; pdb.set_trace()
             res = self.w2v_model.extract_features(**w2v_args)
 
             x = res["x"]
@@ -753,8 +782,6 @@ class Wav2VecEncoder(FairseqEncoder):
         (Pdb) self.proj
         Linear(in_features=1024, out_features=768, bias=True)
         '''
-
-        # import pdb; pdb.set_trace()
 
         return {
             "encoder_out": x,  # T x B x C
@@ -897,7 +924,6 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 - the decoder's output of shape `(batch, tgt_len, vocab)`
                 - a dictionary with any model-specific outputs
         """
-        # import pdb; pdb.set_trace()
         # if type(prev_output_tokens)==list:
         prev_output_tokens = prev_output_tokens.long()
         x, extra = self.extract_features(
@@ -948,7 +974,6 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
         inner_states = [x]
 
-        # import pdb; pdb.set_trace()
         '''
         (Pdb) prev_output_tokens.eq(self.padding_idx)
         tensor([[False, False, False,  ...,  True,  True,  True],

@@ -23,11 +23,15 @@ from fairseq.logging.meters import safe_round
 
 from omegaconf import II
 
+from pdb import set_trace as Tra
+
 @dataclass
 class LabelSmoothedCrossEntropyWithCtcCriterionConfig(
     LabelSmoothedCrossEntropyCriterionConfig
 ):
     ctc_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
+    inter_ctc: bool = field(default=False, metadata={"help": "intermediate CTC loss"})
+    only_inter_ctc: bool = field(default=False, metadata={"help": "only use intermediate CTC loss"})
     # ctc_weight: float = II("model.ctc_weight")
     s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
 
@@ -47,6 +51,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         ignore_prefix_size,
         report_accuracy,
         ctc_weight,
+        inter_ctc,
+        only_inter_ctc,
         mwer_training,
         mwer_training_updates,
         s2t_src_joint_ctc,
@@ -55,8 +61,12 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy
         )
         self.ctc_weight = ctc_weight
+        self.inter_ctc = inter_ctc
+        self.only_inter_ctc = only_inter_ctc
+
         self.mwer_training = mwer_training
         self.mwer_training_updates = mwer_training_updates
+
         self.post_process = self.task.eval_wer_post_process
         self.blank_idx = 0
 
@@ -71,12 +81,14 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         ce_loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
 
         ctc_loss = torch.tensor(0.0).type_as(ce_loss)
+        inter_ctc_loss = torch.tensor(0.0).type_as(ce_loss)
         if self.ctc_weight > 0.0:
-            ctc_lprobs, ctc_lens = model.get_ctc_output(net_output, sample)
+            ctc_lprobs, inter_ctc_lprobs, ctc_lens = model.get_ctc_output(net_output, sample, self.inter_ctc, self.only_inter_ctc)
             ctc_tgt, ctc_tgt_lens = model.get_ctc_target(sample, self.s2t_src_joint_ctc)
             ctc_tgt_mask = lengths_to_mask(ctc_tgt_lens)
             ctc_tgt_flat = ctc_tgt.masked_select(ctc_tgt_mask)
             reduction = "sum" if reduce else "none"
+
             ctc_loss = (
                 F.ctc_loss(
                     ctc_lprobs,
@@ -87,6 +99,18 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     zero_infinity=True,
                 )
             )
+            if self.inter_ctc and ~self.only_inter_ctc:
+                inter_ctc_loss = (
+                    F.ctc_loss(
+                        inter_ctc_lprobs,
+                        ctc_tgt_flat,
+                        ctc_lens,
+                        ctc_tgt_lens,
+                        reduction=reduction,
+                        zero_infinity=True,
+                    )
+                )
+
 
         mwer_loss = torch.tensor(0.0).type_as(ce_loss)
         if (self.mwer_training) and (model.encoder.num_updates > self.mwer_training_updates):
@@ -96,10 +120,11 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         loss = (
             ce_loss * (1-self.ctc_weight) 
             + ctc_loss * self.ctc_weight 
+            + inter_ctc_loss * self.ctc_weight 
             + mwer_loss # argmax sampling, inplace operation  
         )
 
-        # import pdb; pdb.set_trace()
+        # Tra()
 
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
@@ -109,6 +134,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             "nll_loss": utils.item(nll_loss.data),
             "ce_loss": utils.item(ce_loss.data),
             "ctc_loss": utils.item(ctc_loss.data),
+            "inter_ctc_loss": utils.item(inter_ctc_loss.data),
             "mwer_loss": utils.item(mwer_loss.data),
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
@@ -124,7 +150,6 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             if "src_lengths" in sample["net_input"]:
                 input_lengths = sample["net_input"]["src_lengths"]
             else:
-                # import pdb; pdb.set_trace()
                 if net_output[-1]["padding_mask"] is not None:
                     non_padding_mask = ~net_output[-1]["padding_mask"]
                     input_lengths = non_padding_mask.long().sum(-1)
@@ -201,7 +226,6 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         #     batch_nbest_lists = self.task.sequence_generator.generate([model], sample, prefix_tokens=None, constraints=None)
 
         batch_nbest_lists = self.task.sequence_generator._generate(sample, prefix_tokens=None, mwer_training=True, beam_size_for_mwer_training=1)
-        # import pdb; pdb.set_trace()
             
         mwer_loss = []
         for i, nbest_lists in enumerate(batch_nbest_lists):
@@ -216,8 +240,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                 hypo_score = hypos['positional_scores'] # log p(y1|x) log p(y2|y1,x) -> log p(y1,y2|x)
                 hypo_prob = torch.exp(hypo_score.sum())
 
-                if torch.isnan(hypo_score).sum().item() > 0 : print('nan is detected in hypo_score (log prob)'); print(hypo_score); import pdb; pdb.set_trace()
-                if torch.isinf(hypo_score).sum().item() > 0 : print('inf is detected in hypo_score (log prob)'); print(hypo_score); import pdb; pdb.set_trace()
+                if torch.isnan(hypo_score).sum().item() > 0 : print('nan is detected in hypo_score (log prob)'); print(hypo_score); Tra()
+                if torch.isinf(hypo_score).sum().item() > 0 : print('inf is detected in hypo_score (log prob)'); print(hypo_score); Tra()
 
                 # to avoid -inf loss
                 if hypo_prob.item() > 0 :
@@ -236,12 +260,12 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             else:
                 re_normalized_hypo_scores = torch.log(hypo_probs) - torch.log(torch.sum(hypo_probs))
 
-                # if torch.isnan(hypo_scores).sum().item() > 0 : print(hypo_scores); import pdb; pdb.set_trace()
-                # if torch.isinf(hypo_scores).sum().item() > 0 : print(hypo_scores); import pdb; pdb.set_trace()
-                if torch.isnan(hypo_probs).sum().item() > 0 : print('nan is detected in hypo_probs'); print(hypo_probs); import pdb; pdb.set_trace()
-                if torch.isinf(hypo_probs).sum().item() > 0 : print('inf is detected in hypo_probs'); print(hypo_probs); import pdb; pdb.set_trace()
-                if torch.isnan(re_normalized_hypo_scores).sum().item() > 0 : print('nan is detected in re_normalized_hypo_scores'); print(re_normalized_hypo_scores); import pdb; pdb.set_trace()
-                if torch.isinf(re_normalized_hypo_scores).sum().item() > 0 : print('inf is detected in re_normalized_hypo_scores'); print(re_normalized_hypo_scores); import pdb; pdb.set_trace()
+                # if torch.isnan(hypo_scores).sum().item() > 0 : print(hypo_scores); Tra()
+                # if torch.isinf(hypo_scores).sum().item() > 0 : print(hypo_scores); Tra()
+                if torch.isnan(hypo_probs).sum().item() > 0 : print('nan is detected in hypo_probs'); print(hypo_probs); Tra()
+                if torch.isinf(hypo_probs).sum().item() > 0 : print('inf is detected in hypo_probs'); print(hypo_probs); Tra()
+                if torch.isnan(re_normalized_hypo_scores).sum().item() > 0 : print('nan is detected in re_normalized_hypo_scores'); print(re_normalized_hypo_scores); Tra()
+                if torch.isinf(re_normalized_hypo_scores).sum().item() > 0 : print('inf is detected in re_normalized_hypo_scores'); print(re_normalized_hypo_scores); Tra()
 
                 wers_ = torch.FloatTensor(wers)
                 wers = (wers_ - torch.mean(wers_)) / (wers_.std() + eps_for_reinforce)
@@ -257,8 +281,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
         # print('torch.stack(mwer_loss)', torch.stack(mwer_loss))
 
-        if torch.isnan(torch.stack(mwer_loss)).sum().item() > 0 : print(mwer_loss); import pdb; pdb.set_trace()
-        if torch.isinf(torch.stack(mwer_loss)).sum().item() > 0 : print(mwer_loss); import pdb; pdb.set_trace()
+        if torch.isnan(torch.stack(mwer_loss)).sum().item() > 0 : print(mwer_loss); Tra()
+        if torch.isinf(torch.stack(mwer_loss)).sum().item() > 0 : print(mwer_loss); Tra()
 
         return torch.stack(mwer_loss).sum()
         # return torch.stack(mwer_loss).mean()
@@ -268,6 +292,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         super().reduce_metrics(logging_outputs)
         ce_loss_sum = sum(log.get("ce_loss", 0) for log in logging_outputs)
         ctc_loss_sum = sum(log.get("ctc_loss", 0) for log in logging_outputs)
+        inter_ctc_loss_sum = sum(log.get("inter_ctc_loss", 0) for log in logging_outputs)
         mwer_loss_sum = sum(log.get("mwer_loss", 0) for log in logging_outputs)
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
 
@@ -276,6 +301,9 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         )
         metrics.log_scalar(
             "ctc_loss", ctc_loss_sum / sample_size / math.log(2), sample_size, round=3
+        )
+        metrics.log_scalar(
+            "inter_ctc_loss", inter_ctc_loss_sum / sample_size / math.log(2), sample_size, round=3
         )
         metrics.log_scalar(
             "mwer_loss", mwer_loss_sum / sample_size / math.log(2), sample_size, round=3

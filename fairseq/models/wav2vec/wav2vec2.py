@@ -40,6 +40,8 @@ MASKING_DISTRIBUTION_CHOICES = ChoiceEnum(["static", "uniform", "normal", "poiss
 LAYER_TYPE_CHOICES = ChoiceEnum(["transformer", "conformer"])
 
 
+from pdb import set_trace as Tra
+
 @dataclass
 class Wav2Vec2Config(FairseqDataclass):
     extractor_mode: EXTRACTOR_MODE_CHOICES = field(
@@ -1005,6 +1007,8 @@ class TransformerEncoder(nn.Module):
         if self.layer_norm_first and layer is None:
             x = self.layer_norm(x)
 
+        # Tra()
+
         return x, layer_results
 
     def extract_features(
@@ -1043,6 +1047,13 @@ class TransformerEncoder(nn.Module):
 
         layer_results = []
         r = None
+
+        # Tra()
+        # layer drop can cause unstable intermediate ctc training
+        '''
+        (Pdb) np.random.random() if self.layerdrop > 0 else 1
+        0.39587400901695124
+        '''
         for i, layer in enumerate(self.layers):
             dropout_probability = np.random.random() if self.layerdrop > 0 else 1
             if not self.training or (dropout_probability > self.layerdrop):
