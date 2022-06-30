@@ -31,6 +31,7 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+from pdb import set_trace as Tra
 
 class LabelEncoder(object):
     def __init__(self, dictionary):
@@ -103,6 +104,10 @@ class AudioFinetuningConfig(AudioPretrainingConfig):
             "help": "required for autoregressive decoders (like seq2seq models); "
             "adds 'prev_output_tokens' to input and appends eos to target"
         },
+    )
+
+    greedy_decoding: bool = field(
+        default=False, metadata={"help": "tmp"}
     )
 
     # s2t_src_joint_ctc: Optional[bool] = II("model.mask_other")
@@ -303,15 +308,23 @@ class AudioFinetuningTask(AudioPretrainingTask):
         return loss, sample_size, logging_output
 
     def valid_step(self, sample, model, criterion):
-        loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
+        model.eval()
+        with torch.no_grad():
+            if self.cfg.greedy_decoding:
+                loss, sample_size, logging_output, net_output = criterion(model, sample, greedy_decoding=self.cfg.greedy_decoding)
+                greedy_results = self.greedy_decoding(model, sample, net_output)
+            else:
+                loss, sample_size, logging_output = criterion(model, sample, greedy_decoding=self.cfg.greedy_decoding)
+                greedy_results = None
+
         if self.cfg.eval_wer and self.cfg.autoregressive:
-            metrics = self._inference_with_wer(self.sequence_generator, sample, model)
+            metrics = self._inference_with_wer(self.sequence_generator, sample, model, greedy_results)
             logging_output["_num_char_errors"] = metrics["num_char_errors"]
             logging_output["_num_chars"] = metrics["num_chars"]
             logging_output["_num_word_errors"] = metrics["num_word_errors"]
             logging_output["_num_words"] = metrics["num_words"]
         if self.cfg.eval_bleu and self.cfg.autoregressive:
-            metrics = self._inference_with_bleu(self.sequence_generator, sample, model)
+            metrics = self._inference_with_bleu(self.sequence_generator, sample, model, greedy_results)
             logging_output["_bleu_sys_len"] = metrics.sys_len
             logging_output["_bleu_ref_len"] = metrics.ref_len
             # we split counts into separate entries so that they can be
@@ -354,7 +367,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
     def max_positions(self):
         return self.cfg.max_source_positions, self.cfg.max_target_positions
 
-    def _inference_with_wer(self, generator, sample, model):
+    def _inference_with_wer(self, generator, sample, model, greedy_results=None):
         import editdistance
 
         def decode(toks):
@@ -369,10 +382,17 @@ class AudioFinetuningTask(AudioPretrainingTask):
 
         num_word_errors, num_char_errors = 0, 0
         num_chars, num_words = 0, 0
-        gen_out = self.inference_step(generator, [model], sample, None)
+
+        if greedy_results is None:
+            gen_out = self.inference_step(generator, [model], sample, None)
+        else: 
+            gen_out = greedy_results
         
         for i in range(len(gen_out)):
-            hyp = decode(gen_out[i][0]["tokens"]) # use only best beam 
+            if greedy_results is None:
+                hyp = decode(gen_out[i][0]["tokens"]) # use only best beam 
+            else:
+                hyp = decode(gen_out[i])
             ref = decode(
                 utils.strip_pad(sample["target"][i], self.target_dictionary.pad()),
             )
@@ -390,7 +410,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
             "num_words": num_words,
         }
 
-    def _inference_with_bleu(self, generator, sample, model):
+    def _inference_with_bleu(self, generator, sample, model, greedy_results=None):
         import sacrebleu
 
         # # Handle tokenization and BPE
@@ -420,10 +440,18 @@ class AudioFinetuningTask(AudioPretrainingTask):
             s = s.replace(' ','').replace('|',' ')
             return s
 
-        gen_out = self.inference_step(generator, [model], sample)
+        if greedy_results is None:
+            gen_out = self.inference_step(generator, [model], sample, None)
+        else: 
+            gen_out = greedy_results
+        
         hyps, refs = [], []
         for i in range(len(gen_out)):
-            hyps.append(decode(gen_out[i][0]["tokens"], is_ref=False))
+            if greedy_results is None:
+                hyp = gen_out[i][0]["tokens"] # use only best beam 
+            else:
+                hyp = gen_out[i]
+            hyps.append(decode(hyp, is_ref=False))
             refs.append(
                 decode(
                     utils.strip_pad(sample["target"][i], self.target_dictionary.pad()),
@@ -493,3 +521,26 @@ class AudioFinetuningTask(AudioPretrainingTask):
                     smooth_method="exp",
                 ).score,
             )
+
+    def greedy_decoding(self, model, sample, net_output):
+        with torch.no_grad():
+            encoder_out = net_output[-1]
+            prev_output_tokens = sample['net_input']['prev_output_tokens'][:,0].unsqueeze(1) # bos token
+            max_step = sample['net_input']['prev_output_tokens'].size(1)+5
+            bsz = sample['net_input']['prev_output_tokens'].size(0)
+            # max_step = model.max_positions()[1]
+            # if max_step is None:
+            #     max_step = 256
+            accum_softmax_prob = torch.Tensor().type_as(encoder_out['encoder_out'])
+            for i in range(max_step):
+                if (i > 1) and (model.soft_input_training) and (model.soft_input_training_updates <= model.encoder.num_updates) : 
+                    softmax_prob = model.decoder(prev_output_tokens=prev_output_tokens, encoder_out=encoder_out, soft_input=accum_softmax_prob)[0]
+                else:
+                    softmax_prob = model.decoder(prev_output_tokens=prev_output_tokens, encoder_out=encoder_out)[0]
+                next_output_tokens_prob = softmax_prob[:,-1,:]
+                accum_softmax_prob = torch.cat((accum_softmax_prob,next_output_tokens_prob.unsqueeze(1)),1)
+                next_output_tokens = torch.argmax(next_output_tokens_prob,-1).unsqueeze(1)
+                prev_output_tokens = torch.cat((prev_output_tokens,next_output_tokens),-1)
+                if torch.sum(next_output_tokens == self.target_dictionary.eos()).item() == bsz :
+                    break;
+        return prev_output_tokens

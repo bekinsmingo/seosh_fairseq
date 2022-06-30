@@ -76,7 +76,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         if self.s2t_src_joint_ctc:
             self.s2t_src_dict = self.task.source_dictionary
 
-    def forward(self, model, sample,reduce=True):
+    def forward(self, model, sample, reduce=True, greedy_decoding=False):
         net_output = model(**sample["net_input"])
         ce_loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
 
@@ -204,8 +204,10 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                 logging_output["ctc_c_errors"] = c_err
                 logging_output["ctc_c_total"] = c_len
 
-
-        return loss, sample_size, logging_output
+        if greedy_decoding:
+            return loss, sample_size, logging_output, net_output
+        else:
+            return loss, sample_size, logging_output
 
     def compute_mwer_loss(self, model, sample):
         # this is currently not supported, because i can't find which part is non-differentiable

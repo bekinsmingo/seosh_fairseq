@@ -324,23 +324,25 @@ class Wav2Vec2Seq2SeqConfig(Wav2Vec2AsrConfig):
     autoregressive: bool = II("task.autoregressive")
 
 
-    ## added
-    # use_pretrained_bart_decoder: bool = field(
-    #     default=False,
-    #     metadata={"help": "use pretrained BART decoder"},
-    # )
-    # bart_path: str = field(
-    #     default=None, metadata={"help": "path to BART model"}
-    # )
+    ########################### added ###########################
+
+    ## for bart initialized decoder
     load_pretrained_decoder_from: Optional[str] = field(
         default=None, metadata={"help": "model to take decoder weights from (for initialization)"}
     )
 
+    ## for ctc joint
     # ctc_weight: float = II("criterion.ctc_weight")
     # ctc_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
-
-
     s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
+
+    ## for soft input training
+    soft_input_training: bool = field(
+        default=False, metadata={"help": "tmp"}
+    )
+    soft_input_training_updates: int = field(
+        default=50000, metadata={"help": "tmp"}
+    )
 
 def need_finetuning(ft_params, param_name):
     if ft_params == "all":
@@ -352,10 +354,23 @@ def need_finetuning(ft_params, param_name):
     return False
 
 
+# @register_model("wav2vec_ctc", dataclass=Wav2Vec2CtcConfig)
+# class Wav2VecCtc(BaseFairseqModel):
+#     def __init__(self, cfg: Wav2Vec2CtcConfig, w2v_encoder: BaseFairseqModel):
+#         super().__init__()
+#         self.cfg = cfg
+#         self.w2v_encoder = w2v_encoder
+#         self.blank_weight = cfg.blank_weight
+#         self.blank_mode = cfg.blank_mode
+
+
 @register_model("wav2vec_seq2seq", dataclass=Wav2Vec2Seq2SeqConfig)
 class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
-    def __init__(self, encoder, decoder):
+    def __init__(self, cfg:Wav2Vec2Seq2SeqConfig, encoder, decoder):
         super().__init__(encoder, decoder)
+        self.cfg = cfg
+        self.soft_input_training = cfg.soft_input_training
+        self.soft_input_training_updates = cfg.soft_input_training_updates
 
     @classmethod
     def build_model(cls, cfg: Wav2Vec2Seq2SeqConfig, task: FairseqTask):
@@ -380,7 +395,7 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
         encoder = cls.build_encoder(cfg, src_dict if cfg.s2t_src_joint_ctc and src_dict else tgt_dict)
         decoder = cls.build_decoder(cfg, tgt_dict, decoder_embed_tokens)
 
-        return Wav2Vec2Seq2SeqModel(encoder, decoder)
+        return Wav2Vec2Seq2SeqModel(cfg, encoder, decoder)
 
     @classmethod
     def build_encoder(cls, cfg: Wav2Vec2AsrConfig, tgt_dict):
@@ -433,8 +448,14 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
             return TransformerDecoder(cfg, tgt_dict, embed_tokens)
 
     def forward(self, **kwargs):
-        encoder_out = self.encoder(**kwargs)
-        decoder_out = self.decoder(encoder_out=encoder_out, **kwargs)
+        encoder_out = self.encoder(**kwargs)    
+        if (self.soft_input_training) and (self.soft_input_training_updates <= self.encoder.num_updates):
+            with torch.no_grad():
+                decoder_out = self.decoder(encoder_out=encoder_out, **kwargs)
+            decoder_out = self.decoder(encoder_out=encoder_out, soft_input=decoder_out[0], **kwargs)
+        else:
+            decoder_out = self.decoder(encoder_out=encoder_out, **kwargs)
+
         return (decoder_out[0], decoder_out[1], encoder_out)
 
     def get_ctc_target(self, sample: Optional[Dict[str, Tensor]], s2t_src_joint_ctc):
@@ -494,8 +515,6 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
                 inter_logits = self.encoder.ctc_proj(inter_encoder_out)
                 inter_out = utils.log_softmax(inter_logits.float(), dim=-1)
-            
-            # Tra()
 
             # padding_mask = net_output[1]["encoder_out"]["encoder_padding_mask"]
             padding_mask = net_output[2]["padding_mask"]
@@ -908,7 +927,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             self.layer_norm = None
 
     def forward(
-        self, prev_output_tokens, encoder_out=None, incremental_state=None, **unused
+        self, prev_output_tokens, encoder_out=None, incremental_state=None, soft_input=None, **unused
     ):
         """
         Args:
@@ -926,14 +945,32 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         """
         # if type(prev_output_tokens)==list:
         prev_output_tokens = prev_output_tokens.long()
+        max_len = prev_output_tokens.size(1)
+
+        if soft_input is not None:
+            bos = prev_output_tokens[0,0]
+            tmp = torch.zeros(soft_input.size(0),1,soft_input.size(-1))
+            tmp[:,:,bos] = 1
+            soft_input = torch.cat((tmp.type_as(soft_input), soft_input[:,:,:]), 1)
+            soft_input = soft_input[:,:max_len,:]
+
+            # input_padding_mask = (prev_output_tokens == self.padding_idx).unsqueeze(-1).expand(soft_input.size())
+            padding_start_idx = torch.sum((prev_output_tokens != self.padding_idx),1)
+            padding_vector = torch.zeros(1,soft_input.size(-1))
+            padding_vector[:,self.padding_idx] = 1
+            padding_vector = padding_vector.type_as(soft_input)
+
+            for i, idx in enumerate(padding_start_idx): 
+                soft_input[i][idx:] = padding_vector.repeat(max_len-idx,1)
+
         x, extra = self.extract_features(
-            prev_output_tokens, encoder_out, incremental_state
+            prev_output_tokens, encoder_out, incremental_state, soft_input
         )
         x = self.output_layer(x)
         return x, extra
 
     def extract_features(
-        self, prev_output_tokens, encoder_out=None, incremental_state=None, **unused
+        self, prev_output_tokens, encoder_out=None, incremental_state=None, soft_input=None, **unused
     ):
         """
         Similar to *forward* but only return features.
@@ -959,7 +996,10 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 positions = positions[:, -1:]
 
         # embed tokens and positions
-        x = self.embed_scale * self.embed_tokens(prev_output_tokens)
+        if soft_input is None:
+            x = self.embed_scale * self.embed_tokens(prev_output_tokens)
+        else:
+            x = self.embed_scale * F.linear(soft_input,self.embed_tokens.weight.T)
 
         if self.project_in_dim is not None:
             x = self.project_in_dim(x)

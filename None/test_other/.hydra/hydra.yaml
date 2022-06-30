@@ -1,0 +1,171 @@
+hydra:
+  run:
+    dir: ${common_eval.results_path}/${dataset.gen_subset}
+  sweep:
+    dir: ${common_eval.results_path}
+    subdir: ${dataset.gen_subset}
+  hydra_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][HYDRA] %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      level: INFO
+      handlers:
+      - console
+    loggers:
+      logging_example:
+        level: DEBUG
+    disable_existing_loggers: false
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+      file:
+        class: logging.FileHandler
+        formatter: simple
+        filename: ${hydra.job.name}.log
+    root:
+      level: INFO
+      handlers:
+      - console
+      - file
+    disable_existing_loggers: false
+  sweeper:
+    _target_: hydra_plugins.hydra_ax_sweeper.ax_sweeper.AxSweeper
+    max_batch_size: null
+    ax_config:
+      max_trials: 128
+      early_stop:
+        minimize: true
+        max_epochs_without_improvement: 32
+        epsilon: 1.0e-05
+      experiment:
+        name: ${dataset.gen_subset}
+        objective_name: wer
+        minimize: true
+        parameter_constraints: null
+        outcome_constraints: null
+        status_quo: null
+      client:
+        verbose_logging: false
+        random_seed: null
+      params:
+        decoding.lmweight:
+          type: range
+          bounds:
+          - 0.0
+          - 5.0
+        decoding.wordscore:
+          type: range
+          bounds:
+          - -5.0
+          - 5.0
+  launcher:
+    _target_: hydra._internal.core_plugins.basic_launcher.BasicLauncher
+  help:
+    app_name: ${hydra.job.name}
+    header: '${hydra.help.app_name} is powered by Hydra.
+
+      '
+    footer: 'Powered by Hydra (https://hydra.cc)
+
+      Use --hydra-help to view Hydra specific help
+
+      '
+    template: '${hydra.help.header}
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (group=option)
+
+
+      $APP_CONFIG_GROUPS
+
+
+      == Config ==
+
+      Override anything in the config (foo.bar=value)
+
+
+      $CONFIG
+
+
+      ${hydra.help.footer}
+
+      '
+  hydra_help:
+    hydra_help: ???
+    template: 'Hydra (${hydra.runtime.version})
+
+      See https://hydra.cc for more info.
+
+
+      == Flags ==
+
+      $FLAGS_HELP
+
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (For example, append hydra/job_logging=disabled
+      to command line)
+
+
+      $HYDRA_CONFIG_GROUPS
+
+
+      Use ''--cfg hydra'' to Show the Hydra config.
+
+      '
+  output_subdir: .hydra
+  overrides:
+    hydra:
+    - hydra/sweeper=lexfree_char_ngram
+    task:
+    - decoding.lmweight=0.05508889724334992
+    - decoding.wordscore=-1.7317493182225747
+    - task=audio_finetuning
+    - task.data=/mnt/clova_speech/users/seosh/librispeech_model/am/fairseq_audio_data2
+    - task.labels=ltr
+    - common_eval.path=/mnt/clova_speech/users/seosh/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
+    - decoding.type=kenlm
+    - decoding.lmpath=/mnt/clova_speech/users/seosh/15gram/lm_librispeech_kenlm_upper_char_15g_pruned.bin
+    - decoding.unitlm=True
+    - decoding.beam=500
+    - decoding.silweight=0
+    - decoding.beamthreshold=15.0
+    - decoding.beamsizetoken=10
+    - decoding.nbest=50
+    - dataset.gen_subset=test_other
+    - dataset.max_tokens=4000000
+    - common_eval.quiet=True
+    - distributed_training.distributed_world_size=1
+  job:
+    name: utils
+    override_dirname: common_eval.path=/mnt/clova_speech/users/seosh/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt,common_eval.quiet=True,dataset.gen_subset=test_other,dataset.max_tokens=4000000,decoding.beam=500,decoding.beamsizetoken=10,decoding.beamthreshold=15.0,decoding.lmpath=/mnt/clova_speech/users/seosh/15gram/lm_librispeech_kenlm_upper_char_15g_pruned.bin,decoding.lmweight=0.05508889724334992,decoding.nbest=50,decoding.silweight=0,decoding.type=kenlm,decoding.unitlm=True,decoding.wordscore=-1.7317493182225747,distributed_training.distributed_world_size=1,task.data=/mnt/clova_speech/users/seosh/librispeech_model/am/fairseq_audio_data2,task.labels=ltr,task=audio_finetuning
+    id: '37'
+    num: 37
+    config_name: infer
+    env_set: {}
+    env_copy: []
+    config:
+      override_dirname:
+        kv_sep: '='
+        item_sep: ','
+        exclude_keys: []
+  runtime:
+    version: 1.0.7
+    cwd: /workspace/fairseq
+  verbose: false
