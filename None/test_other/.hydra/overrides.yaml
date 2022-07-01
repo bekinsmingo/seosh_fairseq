@@ -1,11 +1,11 @@
-- decoding.lmweight=0.05508889724334992
-- decoding.wordscore=-1.7317493182225747
+- decoding.lmweight=4.553771428763866
+- decoding.wordscore=4.375298237428069
 - task=audio_finetuning
 - task.data=/mnt/clova_speech/users/seosh/librispeech_model/am/fairseq_audio_data2
 - task.labels=ltr
 - common_eval.path=/mnt/clova_speech/users/seosh/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
 - decoding.type=kenlm
-- decoding.lmpath=/mnt/clova_speech/users/seosh/15gram/lm_librispeech_kenlm_upper_char_15g_pruned.bin
+- decoding.lmpath=/mnt/clova_speech/e2e_dataset/en/model/KenLM/en_libri_char_6.binary
 - decoding.unitlm=True
 - decoding.beam=500
 - decoding.silweight=0

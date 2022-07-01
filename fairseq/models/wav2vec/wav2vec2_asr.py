@@ -493,6 +493,7 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
             if padding_mask is not None :
                 if len(padding_mask) > 0:
                     lens -= padding_mask[0].sum(dim=-1)
+                    
             return out, None, lens
 
         else:

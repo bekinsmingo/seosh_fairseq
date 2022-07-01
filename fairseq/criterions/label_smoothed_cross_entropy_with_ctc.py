@@ -85,6 +85,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         if self.ctc_weight > 0.0:
             ctc_lprobs, inter_ctc_lprobs, ctc_lens = model.get_ctc_output(net_output, sample, self.inter_ctc, self.only_inter_ctc)
             ctc_tgt, ctc_tgt_lens = model.get_ctc_target(sample, self.s2t_src_joint_ctc)
+            # Tra()
             ctc_tgt_mask = lengths_to_mask(ctc_tgt_lens)
             ctc_tgt_flat = ctc_tgt.masked_select(ctc_tgt_mask)
             reduction = "sum" if reduce else "none"
@@ -99,7 +100,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     zero_infinity=True,
                 )
             )
-            if self.inter_ctc and ~self.only_inter_ctc:
+            if (self.inter_ctc) and (not self.only_inter_ctc):
+                # Tra()
                 inter_ctc_loss = (
                     F.ctc_loss(
                         inter_ctc_lprobs,

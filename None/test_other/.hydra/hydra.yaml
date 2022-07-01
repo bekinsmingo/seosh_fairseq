@@ -134,14 +134,14 @@ hydra:
     hydra:
     - hydra/sweeper=lexfree_char_ngram
     task:
-    - decoding.lmweight=0.05508889724334992
-    - decoding.wordscore=-1.7317493182225747
+    - decoding.lmweight=4.553771428763866
+    - decoding.wordscore=4.375298237428069
     - task=audio_finetuning
     - task.data=/mnt/clova_speech/users/seosh/librispeech_model/am/fairseq_audio_data2
     - task.labels=ltr
     - common_eval.path=/mnt/clova_speech/users/seosh/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
     - decoding.type=kenlm
-    - decoding.lmpath=/mnt/clova_speech/users/seosh/15gram/lm_librispeech_kenlm_upper_char_15g_pruned.bin
+    - decoding.lmpath=/mnt/clova_speech/e2e_dataset/en/model/KenLM/en_libri_char_6.binary
     - decoding.unitlm=True
     - decoding.beam=500
     - decoding.silweight=0
@@ -154,9 +154,9 @@ hydra:
     - distributed_training.distributed_world_size=1
   job:
     name: utils
-    override_dirname: common_eval.path=/mnt/clova_speech/users/seosh/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt,common_eval.quiet=True,dataset.gen_subset=test_other,dataset.max_tokens=4000000,decoding.beam=500,decoding.beamsizetoken=10,decoding.beamthreshold=15.0,decoding.lmpath=/mnt/clova_speech/users/seosh/15gram/lm_librispeech_kenlm_upper_char_15g_pruned.bin,decoding.lmweight=0.05508889724334992,decoding.nbest=50,decoding.silweight=0,decoding.type=kenlm,decoding.unitlm=True,decoding.wordscore=-1.7317493182225747,distributed_training.distributed_world_size=1,task.data=/mnt/clova_speech/users/seosh/librispeech_model/am/fairseq_audio_data2,task.labels=ltr,task=audio_finetuning
-    id: '37'
-    num: 37
+    override_dirname: common_eval.path=/mnt/clova_speech/users/seosh/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt,common_eval.quiet=True,dataset.gen_subset=test_other,dataset.max_tokens=4000000,decoding.beam=500,decoding.beamsizetoken=10,decoding.beamthreshold=15.0,decoding.lmpath=/mnt/clova_speech/e2e_dataset/en/model/KenLM/en_libri_char_6.binary,decoding.lmweight=4.553771428763866,decoding.nbest=50,decoding.silweight=0,decoding.type=kenlm,decoding.unitlm=True,decoding.wordscore=4.375298237428069,distributed_training.distributed_world_size=1,task.data=/mnt/clova_speech/users/seosh/librispeech_model/am/fairseq_audio_data2,task.labels=ltr,task=audio_finetuning
+    id: '63'
+    num: 63
     config_name: infer
     env_set: {}
     env_copy: []

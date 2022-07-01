@@ -8,6 +8,7 @@ import torch
 from . import BaseWrapperDataset, data_utils
 from fairseq.data.text_compressor import TextCompressor, TextCompressionLevel
 
+from pdb import set_trace as Tra
 
 class AddTargetDataset(BaseWrapperDataset):
     def __init__(
@@ -111,9 +112,9 @@ class AddTargetDataset(BaseWrapperDataset):
 
         collated["target"] = target
         if self.s2t_src_labels:
-            collated["s2t_src_target"] = s2t_src_target
+            collated["s2t_src_target"] = s2t_src_target.long()
 
-        # import pdb; pdb.set_trace()
+        # Tra()
 
         return collated
 

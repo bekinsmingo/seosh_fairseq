@@ -1,18 +1,18 @@
-WER: 5.441033184953098
-err / num_ref_words = 2848 / 52343
+WER: 99.47079838755899
+err / num_ref_words = 52066 / 52343
 
 _name: null
 nbest: 50
 unitlm: true
-lmpath: /mnt/clova_speech/users/seosh/15gram/lm_librispeech_kenlm_upper_char_15g_pruned.bin
+lmpath: /mnt/clova_speech/e2e_dataset/en/model/KenLM/en_libri_char_6.binary
 lexicon: null
 beam: 500
 beamthreshold: 15.0
 beamsizetoken: 10
-wordscore: 4.420962465383905
+wordscore: -3.2060715835541487
 unkweight: -.inf
 silweight: 0.0
-lmweight: 0.5798314668251666
+lmweight: 4.103479976765811
 rescoring: false
 rescoringweight: 2.0
 rescoringwordlenweight: 2.0
