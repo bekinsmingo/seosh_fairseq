@@ -128,7 +128,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         loss = (
             ce_loss
             + ctc_loss * self.ctc_weight 
-            + inter_ctc_loss * self.self.inter_ctc_weight 
+            + inter_ctc_loss * self.inter_ctc_weight 
             + mwer_loss * self.mwer_weight # argmax sampling, inplace operation  
         )
 
