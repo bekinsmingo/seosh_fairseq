@@ -314,7 +314,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
                 loss, sample_size, logging_output, net_output = criterion(model, sample, greedy_decoding=self.cfg.greedy_decoding)
                 greedy_results = self.greedy_decoding(model, sample, net_output)
             else:
-                loss, sample_size, logging_output = criterion(model, sample, greedy_decoding=self.cfg.greedy_decoding)
+                loss, sample_size, logging_output = criterion(model, sample)
                 greedy_results = None
 
         if self.cfg.eval_wer and self.cfg.autoregressive:

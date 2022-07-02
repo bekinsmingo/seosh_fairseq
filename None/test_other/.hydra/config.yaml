@@ -74,15 +74,15 @@ decoding:
   _name: null
   nbest: 50
   unitlm: true
-  lmpath: /mnt/clova_speech/e2e_dataset/en/model/KenLM/en_libri_char_6.binary
+  lmpath: /mnt/clova_speech/users/seosh/15gram/lm_librispeech_kenlm_upper_char_15g_pruned.bin
   lexicon: null
   beam: 500
   beamthreshold: 15.0
   beamsizetoken: 10
-  wordscore: -4.0922133810818195
+  wordscore: 2.3733998835086823
   unkweight: -.inf
   silweight: 0.0
-  lmweight: 0.006796400994062424
+  lmweight: 4.62188430596143
   rescoring: false
   rescoringweight: 2.0
   rescoringwordlenweight: 2.0
