@@ -79,10 +79,10 @@ decoding:
   beam: 500
   beamthreshold: 15.0
   beamsizetoken: 10
-  wordscore: 4.375298237428069
+  wordscore: -4.0922133810818195
   unkweight: -.inf
   silweight: 0.0
-  lmweight: 4.553771428763866
+  lmweight: 0.006796400994062424
   rescoring: false
   rescoringweight: 2.0
   rescoringwordlenweight: 2.0

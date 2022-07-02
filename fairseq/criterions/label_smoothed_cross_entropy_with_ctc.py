@@ -30,13 +30,15 @@ class LabelSmoothedCrossEntropyWithCtcCriterionConfig(
     LabelSmoothedCrossEntropyCriterionConfig
 ):
     ctc_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
+    inter_ctc_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
+    # ctc_weight: float = II("model.ctc_weight")
     inter_ctc: bool = field(default=False, metadata={"help": "intermediate CTC loss"})
     only_inter_ctc: bool = field(default=False, metadata={"help": "only use intermediate CTC loss"})
-    # ctc_weight: float = II("model.ctc_weight")
     s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
 
     mwer_training: bool = field(default=False, metadata={"help": "mwer training with nbest hypos"})
     mwer_training_updates: int = field(default=10000, metadata={"help": "weight for CTC loss"})
+    mwer_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
 
 @register_criterion(
     "label_smoothed_cross_entropy_with_ctc",
@@ -51,21 +53,25 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         ignore_prefix_size,
         report_accuracy,
         ctc_weight,
+        inter_ctc_weight,
         inter_ctc,
         only_inter_ctc,
         mwer_training,
         mwer_training_updates,
+        mwer_weight,
         s2t_src_joint_ctc,
     ):
         super().__init__(
             task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy
         )
         self.ctc_weight = ctc_weight
+        self.inter_ctc_weight = inter_ctc_weight
         self.inter_ctc = inter_ctc
         self.only_inter_ctc = only_inter_ctc
 
         self.mwer_training = mwer_training
         self.mwer_training_updates = mwer_training_updates
+        self.mwer_weight = mwer_weight
 
         self.post_process = self.task.eval_wer_post_process
         self.blank_idx = 0
@@ -120,10 +126,10 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
         # interpolation
         loss = (
-            ce_loss * (1-self.ctc_weight) 
+            ce_loss
             + ctc_loss * self.ctc_weight 
-            + inter_ctc_loss * self.ctc_weight 
-            + mwer_loss # argmax sampling, inplace operation  
+            + inter_ctc_loss * self.self.inter_ctc_weight 
+            + mwer_loss * self.mwer_weight # argmax sampling, inplace operation  
         )
 
         # Tra()

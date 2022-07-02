@@ -1,5 +1,5 @@
-WER: 99.47079838755899
-err / num_ref_words = 52066 / 52343
+WER: 4.459048965477714
+err / num_ref_words = 2334 / 52343
 
 _name: null
 nbest: 50
@@ -9,10 +9,10 @@ lexicon: null
 beam: 500
 beamthreshold: 15.0
 beamsizetoken: 10
-wordscore: -3.2060715835541487
+wordscore: -5.0
 unkweight: -.inf
 silweight: 0.0
-lmweight: 4.103479976765811
+lmweight: 0.011226305050120048
 rescoring: false
 rescoringweight: 2.0
 rescoringwordlenweight: 2.0

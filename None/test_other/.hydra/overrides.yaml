@@ -1,5 +1,5 @@
-- decoding.lmweight=4.553771428763866
-- decoding.wordscore=4.375298237428069
+- decoding.lmweight=0.006796400994062424
+- decoding.wordscore=-4.0922133810818195
 - task=audio_finetuning
 - task.data=/mnt/clova_speech/users/seosh/librispeech_model/am/fairseq_audio_data2
 - task.labels=ltr
