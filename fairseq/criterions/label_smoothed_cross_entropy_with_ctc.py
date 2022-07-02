@@ -29,6 +29,7 @@ from pdb import set_trace as Tra
 class LabelSmoothedCrossEntropyWithCtcCriterionConfig(
     LabelSmoothedCrossEntropyCriterionConfig
 ):
+    ce_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
     ctc_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
     inter_ctc_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
     # ctc_weight: float = II("model.ctc_weight")
@@ -52,6 +53,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         label_smoothing,
         ignore_prefix_size,
         report_accuracy,
+        ce_weight,
         ctc_weight,
         inter_ctc_weight,
         inter_ctc,
@@ -64,6 +66,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         super().__init__(
             task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy
         )
+        self.ce_weight = ce_weight
         self.ctc_weight = ctc_weight
         self.inter_ctc_weight = inter_ctc_weight
         self.inter_ctc = inter_ctc
@@ -126,9 +129,9 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
         # interpolation
         loss = (
-            ce_loss
-            + ctc_loss * self.ctc_weight 
-            + inter_ctc_loss * self.inter_ctc_weight 
+            ce_loss * self.ce_weight
+            + ctc_loss * self.ctc_weight
+            + inter_ctc_loss * self.inter_ctc_weight
             + mwer_loss * self.mwer_weight # argmax sampling, inplace operation  
         )
 
@@ -140,10 +143,10 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         logging_output = {
             "loss": utils.item(loss.data),
             "nll_loss": utils.item(nll_loss.data),
-            "ce_loss": utils.item(ce_loss.data),
-            "ctc_loss": utils.item(ctc_loss.data),
-            "inter_ctc_loss": utils.item(inter_ctc_loss.data),
-            "mwer_loss": utils.item(mwer_loss.data),
+            "ce_loss": utils.item((ce_loss * self.ce_weight).data),
+            "ctc_loss": utils.item((ctc_loss * self.ctc_weight).data),
+            "inter_ctc_loss": utils.item((inter_ctc_loss * self.inter_ctc_weight).data),
+            "mwer_loss": utils.item((mwer_loss * self.mwer_weight).data),
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
