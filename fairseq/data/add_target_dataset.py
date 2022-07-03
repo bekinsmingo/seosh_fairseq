@@ -54,6 +54,7 @@ class AddTargetDataset(BaseWrapperDataset):
 
     def __getitem__(self, index):
         item = self.dataset[index]
+        # print('item',item)
         item["label"] = self.get_label(index, process_fn=self.process_label)
         if self.s2t_src_labels:
             item["s2t_src_label"] = self.get_s2t_src_label(index, process_fn=self.s2t_src_process_label)
@@ -78,9 +79,10 @@ class AddTargetDataset(BaseWrapperDataset):
         else:
             target = [s["label"] for s in samples if s["id"] in indices]
 
+        # Tra()
+
         if self.s2t_src_labels:
             s2t_src_target = [s["s2t_src_label"] for s in samples if s["id"] in indices]
-
 
         if self.add_to_input:
             eos = torch.LongTensor([self.eos])

@@ -1058,7 +1058,9 @@ class TransformerEncoder(nn.Module):
             dropout_probability = np.random.random() if self.layerdrop > 0 else 1
             if not self.training or (dropout_probability > self.layerdrop):
                 x, (z, lr) = layer(
-                    x, self_attn_padding_mask=padding_mask, need_weights=False
+                    x, 
+                    self_attn_padding_mask=padding_mask, 
+                    need_weights=False
                 )
                 if i >= min_layer:
                     layer_results.append((x, z, lr))
@@ -1140,7 +1142,13 @@ class ConformerEncoder(TransformerEncoder):
 
         self.apply(init_bert_params)
 
-    def extract_features(self, x, padding_mask=None, tgt_layer=None):
+    def extract_features(
+        self, 
+        x, 
+        padding_mask=None, 
+        tgt_layer=None,
+        min_layer=0,
+        ):
         if padding_mask is not None:
             x = index_put(x, padding_mask, 0)
 
@@ -1158,9 +1166,11 @@ class ConformerEncoder(TransformerEncoder):
         x = F.dropout(x, p=self.dropout, training=self.training)
 
         layer_results = []
+        # Tra()
         r = None
         for i, layer in enumerate(self.layers):
             dropout_probability = np.random.random()
+            # Tra()
             if not self.training or (dropout_probability > self.layerdrop):
                 x, z = layer(
                     x,
@@ -1168,11 +1178,14 @@ class ConformerEncoder(TransformerEncoder):
                     need_weights=False,
                     position_emb=position_emb,
                 )
-                if tgt_layer is not None:
+                # if tgt_layer is not None:
+                if i >= min_layer:
                     layer_results.append((x, z))
             if i == tgt_layer:
                 r = x
                 break
+
+        # Tra()
 
         if r is not None:
             x = r

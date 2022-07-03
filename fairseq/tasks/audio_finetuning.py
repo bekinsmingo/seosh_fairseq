@@ -244,7 +244,9 @@ class AudioFinetuningTask(AudioPretrainingTask):
                 f"s2t soruce labels length ({len(s2t_src_labels)}) and dataset length "
                 f"({len(self.datasets[split])}) do not match"
             )
-            s2t_src_process_label = LabelEncoder(self.target_dictionary)
+            s2t_src_process_label = LabelEncoder(self.source_dictionary)
+
+        # Tra()
 
         self.datasets[split] = AddTargetDataset(
             dataset=self.datasets[split],

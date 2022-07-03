@@ -1,0 +1,20 @@
+optimizer: ax
+ax:
+  decoding.lmweight: 0.0
+  decoding.wordscore: 1.0967320125899969
+  task: audio_finetuning
+  task.data: /mnt/clova_speech/users/seosh/librispeech_model/am/fairseq_audio_data2
+  task.labels: ltr
+  common_eval.path: /mnt/clova_speech/users/seosh/librispeech_model/am/w2v2/wav2vec2_vox_960h_new.pt
+  decoding.type: kenlm
+  decoding.lmpath: /mnt/clova_speech/users/seosh/15gram/lm_librispeech_kenlm_upper_char_15g_pruned.bin
+  decoding.unitlm: true
+  decoding.beam: 500
+  decoding.silweight: 0
+  decoding.beamthreshold: 15.0
+  decoding.beamsizetoken: 10
+  decoding.nbest: 50
+  dataset.gen_subset: test_other
+  dataset.max_tokens: 4000000
+  common_eval.quiet: true
+  distributed_training.distributed_world_size: 1

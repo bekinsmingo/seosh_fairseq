@@ -36,10 +36,11 @@ class LabelSmoothedCrossEntropyWithCtcCriterionConfig(
     inter_ctc: bool = field(default=False, metadata={"help": "intermediate CTC loss"})
     only_inter_ctc: bool = field(default=False, metadata={"help": "only use intermediate CTC loss"})
     s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
+    joint_ctc_training_updates: int = field(default=0, metadata={"help": "tmp"})
 
     mwer_training: bool = field(default=False, metadata={"help": "mwer training with nbest hypos"})
-    mwer_training_updates: int = field(default=10000, metadata={"help": "weight for CTC loss"})
-    mwer_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
+    mwer_training_updates: int = field(default=10000, metadata={"help": "tmp"})
+    mwer_weight: float = field(default=1.0, metadata={"help": "tmp"})
 
 @register_criterion(
     "label_smoothed_cross_entropy_with_ctc",
@@ -58,6 +59,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         inter_ctc_weight,
         inter_ctc,
         only_inter_ctc,
+        joint_ctc_training_updates,
         mwer_training,
         mwer_training_updates,
         mwer_weight,
@@ -71,6 +73,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         self.inter_ctc_weight = inter_ctc_weight
         self.inter_ctc = inter_ctc
         self.only_inter_ctc = only_inter_ctc
+        self.joint_ctc_training_updates = joint_ctc_training_updates
 
         self.mwer_training = mwer_training
         self.mwer_training_updates = mwer_training_updates
@@ -91,7 +94,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
         ctc_loss = torch.tensor(0.0).type_as(ce_loss)
         inter_ctc_loss = torch.tensor(0.0).type_as(ce_loss)
-        if self.ctc_weight > 0.0:
+        if (self.ctc_weight > 0.0) and (self.joint_ctc_training_updates <= model.encoder.num_updates):
             ctc_lprobs, inter_ctc_lprobs, ctc_lens = model.get_ctc_output(net_output, sample, self.inter_ctc, self.only_inter_ctc)
             ctc_tgt, ctc_tgt_lens = model.get_ctc_target(sample, self.s2t_src_joint_ctc)
             # Tra()
@@ -122,9 +125,10 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     )
                 )
 
+        # Tra()
 
         mwer_loss = torch.tensor(0.0).type_as(ce_loss)
-        if (self.mwer_training) and (model.encoder.num_updates > self.mwer_training_updates):
+        if (self.mwer_training) and (self.mwer_training_updates <= model.encoder.num_updates):
             mwer_loss = self.compute_mwer_loss(model, sample)
 
         # interpolation
@@ -134,8 +138,6 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             + inter_ctc_loss * self.inter_ctc_weight
             + mwer_loss * self.mwer_weight # argmax sampling, inplace operation  
         )
-
-        # Tra()
 
         sample_size = (
             sample["target"].size(0) if self.sentence_avg else sample["ntokens"]
@@ -157,7 +159,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             logging_output["n_correct"] = utils.item(n_correct.data)
             logging_output["total"] = utils.item(total.data)
 
-        if (not model.training) and (self.ctc_weight > 0.0):
+        if (not model.training) and (self.ctc_weight > 0.0) and (self.joint_ctc_training_updates <= model.encoder.num_updates):
             if "src_lengths" in sample["net_input"]:
                 input_lengths = sample["net_input"]["src_lengths"]
             else:
@@ -178,7 +180,10 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                 w_len = 0
                 wv_errs = 0
 
-                ctc_target = sample["target_label"] if "target_label" in sample else sample["target"], 
+                if self.s2t_src_joint_ctc:
+                    ctc_target = sample["s2t_src_target_label"] if "s2t_src_target_label" in sample else sample["s2t_src_target"]
+                else:
+                    ctc_target = sample["target_label"] if "target_label" in sample else sample["target"]
                 for lp, t, inp_l in zip(
                     lprobs_t,
                     ctc_target,
@@ -187,9 +192,18 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     ## only support greedy deconding, not ngram decoding
                     lp = lp[:inp_l].unsqueeze(0)
 
-                    p = (t != self.s2t_src_dict.pad()) & (t != self.s2t_src_dict.eos()) if self.s2t_src_joint_ctc else (t != self.tgt_dict.pad()) & (t != self.tgt_dict.eos())
+                    if self.s2t_src_joint_ctc :
+                        p = (t != self.s2t_src_dict.pad()) & (t != self.s2t_src_dict.eos())
+                    else:
+                        p = (t != self.tgt_dict.pad()) & (t != self.tgt_dict.eos())
+
                     targ = t[p]
-                    targ_units = self.s2t_src_dict.string(targ) if self.s2t_src_joint_ctc else self.tgt_dict.string(targ)
+
+                    if self.s2t_src_joint_ctc :
+                        targ_units = self.s2t_src_dict.string(targ)
+                    else:
+                        targ_units = self.tgt_dict.string(targ)
+
                     targ_units_arr = targ.tolist()
 
                     toks = lp.argmax(dim=-1).unique_consecutive()
@@ -200,7 +214,11 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
                     targ_words = post_process(targ_units, self.post_process).split()
 
-                    pred_units = self.s2t_src_dict.string(pred_units_arr) if self.s2t_src_joint_ctc else self.tgt_dict.string(pred_units_arr)
+                    if self.s2t_src_joint_ctc:
+                        pred_units = self.s2t_src_dict.string(pred_units_arr)
+                    else:
+                        pred_units = self.tgt_dict.string(pred_units_arr)
+                        
                     pred_words_raw = post_process(pred_units, self.post_process).split()
 
                     dist = editdistance.eval(pred_words_raw, targ_words)

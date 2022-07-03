@@ -273,6 +273,21 @@ class Wav2VecCtc(BaseFairseqModel):
 
 
 @dataclass
+class Wav2Vec2CtcForS2TConfig(Wav2Vec2CtcConfig):
+    s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
+
+@register_model("wav2vec_ctc_for_s2t", dataclass=Wav2Vec2CtcForS2TConfig)
+class Wav2VecCtcForS2T(Wav2VecCtc):
+    def __init__(self, cfg: Wav2Vec2CtcForS2TConfig, w2v_encoder: BaseFairseqModel):
+        super().__init__(cfg, w2v_encoder)
+
+    @classmethod
+    def build_model(cls, cfg: Wav2Vec2CtcForS2TConfig, task: FairseqTask):
+        w2v_encoder = Wav2VecEncoder(cfg, len(task.target_dictionary), len(task.target_dictionary))
+        return cls(cfg, w2v_encoder)
+
+
+@dataclass
 class Wav2Vec2Seq2SeqConfig(Wav2Vec2AsrConfig):
     decoder_embed_dim: int = field(
         default=768, metadata={"help": "decoder embedding dimension"}
@@ -327,6 +342,10 @@ class Wav2Vec2Seq2SeqConfig(Wav2Vec2AsrConfig):
     ########################### added ###########################
 
     ## for bart initialized decoder
+    load_pretrained_w2v_ctc_from: Optional[str] = field(
+        default=None, metadata={"help": "model to take decoder weights from (for initialization)"}
+    )
+
     load_pretrained_decoder_from: Optional[str] = field(
         default=None, metadata={"help": "model to take decoder weights from (for initialization)"}
     )
@@ -352,16 +371,6 @@ def need_finetuning(ft_params, param_name):
         if ft_param in param_name:
             return True
     return False
-
-
-# @register_model("wav2vec_ctc", dataclass=Wav2Vec2CtcConfig)
-# class Wav2VecCtc(BaseFairseqModel):
-#     def __init__(self, cfg: Wav2Vec2CtcConfig, w2v_encoder: BaseFairseqModel):
-#         super().__init__()
-#         self.cfg = cfg
-#         self.w2v_encoder = w2v_encoder
-#         self.blank_weight = cfg.blank_weight
-#         self.blank_mode = cfg.blank_mode
 
 
 @register_model("wav2vec_seq2seq", dataclass=Wav2Vec2Seq2SeqConfig)
@@ -399,7 +408,72 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
     @classmethod
     def build_encoder(cls, cfg: Wav2Vec2AsrConfig, tgt_dict):
-        return Wav2VecEncoder(cfg, ctc_proj_dim = len(tgt_dict))
+
+        # load_pretrained_w2v_ctc_from
+
+        # arg_overrides = {
+        #     "dropout": cfg.dropout,
+        #     "activation_dropout": cfg.activation_dropout,
+        #     "dropout_input": cfg.dropout_input,
+        #     "attention_dropout": cfg.attention_dropout,
+        #     "mask_length": cfg.mask_length,
+        #     "mask_prob": cfg.mask_prob,
+        #     "require_same_masks": getattr(cfg, "require_same_masks", True),
+        #     "pct_holes": getattr(cfg, "mask_dropout", 0),
+        #     "mask_selection": cfg.mask_selection,
+        #     "mask_other": cfg.mask_other,
+        #     "no_mask_overlap": cfg.no_mask_overlap,
+        #     "mask_channel_length": cfg.mask_channel_length,
+        #     "mask_channel_prob": cfg.mask_channel_prob,
+        #     "mask_channel_before": cfg.mask_channel_before,
+        #     "mask_channel_selection": cfg.mask_channel_selection,
+        #     "mask_channel_other": cfg.mask_channel_other,
+        #     "no_mask_channel_overlap": cfg.no_mask_channel_overlap,
+        #     "encoder_layerdrop": cfg.layerdrop,
+        #     "feature_grad_mult": cfg.feature_grad_mult,
+        #     "checkpoint_activations": cfg.checkpoint_activations,
+        #     "offload_activations": cfg.offload_activations,
+        #     "min_params_to_wrap": cfg.min_params_to_wrap,
+        # }
+
+        if cfg.load_pretrained_w2v_ctc_from:
+            logger.info("| loading pretrained w2v2-ctc model from {}".format(cfg.load_pretrained_w2v_ctc_from))
+            import os
+            import copy
+            path, checkpoint = os.path.split(cfg.load_pretrained_w2v_ctc_from)
+            arg_overrides = {
+                "task": {"_name":'audio_finetuning', "data": path},
+                "model": {"_name": 'wav2vec_ctc_for_s2t'}
+            }
+            w2v_ctc_models, w2v_ctc_cfg, w2v_ctc_task = checkpoint_utils.load_model_ensemble_and_task(
+                utils.split_paths(cfg.load_pretrained_w2v_ctc_from, separator="\\"),
+                arg_overrides=arg_overrides,
+                strict=False,
+            )
+
+            w2v_ctc = w2v_ctc_models[0].w2v_encoder
+            encoder_out_dim = w2v_ctc.proj.weight.size(1)
+
+            # Tra()
+
+            # for joint ctc
+            w2v_ctc._modules.pop('ctc_proj')
+            og_ctc_proj = w2v_ctc._modules.pop('proj')
+
+            if cfg.s2t_src_joint_ctc:
+                w2v_ctc._modules['ctc_proj'] = og_ctc_proj
+
+            # for encoder-decoder matching
+            if cfg.decoder_embed_dim != encoder_out_dim:
+                proj = Linear(encoder_out_dim, cfg.decoder_embed_dim)
+                w2v_ctc._modules['proj'] = proj
+
+            # Tra()
+
+            return w2v_ctc
+        else:
+            logger.info("| loading pretrained w2v2 model from {}".format(cfg.w2v_path))
+            return Wav2VecEncoder(cfg, ctc_proj_dim = len(tgt_dict))
 
     @classmethod
     def build_decoder(cls, cfg: Wav2Vec2Seq2SeqConfig, tgt_dict, embed_tokens):
@@ -445,6 +519,7 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
                 p.requires_grad = True
             return decoder
         else:
+            # Tra()
             return TransformerDecoder(cfg, tgt_dict, embed_tokens)
 
     def forward(self, **kwargs):
@@ -458,7 +533,7 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
         return (decoder_out[0], decoder_out[1], encoder_out)
 
-    def get_ctc_target(self, sample: Optional[Dict[str, Tensor]], s2t_src_joint_ctc):
+    def get_ctc_target(self, sample: Optional[Dict[str, Tensor]], s2t_src_joint_ctc=False):
         if s2t_src_joint_ctc:
             return sample["s2t_src_target"], sample["s2t_src_target_lengths"]
         else:
@@ -481,8 +556,8 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
                 encoder_out = encoder_out.transpose(0,1)
 
             encoder_out = self.encoder.final_dropout(encoder_out)
-            if 'proj.weight' in self.encoder.state_dict().keys():
-                encoder_out = self.encoder.proj(encoder_out)
+            # if 'proj.weight' in self.encoder.state_dict().keys():
+            #     encoder_out = self.encoder.proj(encoder_out)
 
             logits = self.encoder.ctc_proj(encoder_out)  # T x B x C
             out = utils.log_softmax(logits.float(), dim=-1)      
@@ -498,12 +573,13 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
         else:
             # encoder_out = net_output[1]["encoder_out"]["encoder_out"][0]
-            encoder_out = net_output[2]["encoder_out"]
+            encoder_out = net_output[2]["encoder_out_before_proj"]
             logits = self.encoder.ctc_proj(encoder_out)  # T x B x C
             out = utils.log_softmax(logits.float(), dim=-1)
 
             if inter_ctc:
                 num_layer = len(net_output[2]["layer_results"])
+                # Tra()
                 inter_encoder_out = net_output[2]["layer_results"][num_layer//2][0]
                 if self.encoder.w2v_model.encoder.layer_norm_first:
                     inter_encoder_out = inter_encoder_out.transpose(0,1)
@@ -511,8 +587,8 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
                     inter_encoder_out = inter_encoder_out.transpose(0,1)
 
                 inter_encoder_out = self.encoder.final_dropout(inter_encoder_out)
-                if 'proj.weight' in self.encoder.state_dict().keys():
-                    inter_encoder_out = self.encoder.proj(inter_encoder_out)
+                # if 'proj.weight' in self.encoder.state_dict().keys():
+                #     inter_encoder_out = self.encoder.proj(inter_encoder_out)
 
                 inter_logits = self.encoder.ctc_proj(inter_encoder_out)
                 inter_out = utils.log_softmax(inter_logits.float(), dim=-1)
@@ -726,9 +802,12 @@ class Wav2VecEncoder(FairseqEncoder):
         if targ_d is not None:
             self.proj = Linear(d, targ_d)
 
+        # Tra()
+
         self.ctc_proj = None
         if ctc_proj_dim is not None:
-            self.ctc_proj = nn.Linear(cfg.encoder_embed_dim, ctc_proj_dim)
+            self.ctc_proj = nn.Linear(d, ctc_proj_dim)
+            # self.ctc_proj = nn.Linear(cfg.encoder_embed_dim, ctc_proj_dim)
 
         # self.ctc_proj = None
         # if cfg.ctc_weight > 0.0:
@@ -793,6 +872,8 @@ class Wav2VecEncoder(FairseqEncoder):
 
         x = self.final_dropout(x)
 
+        x_before_proj = x
+
         if self.proj:
             x = self.proj(x)
 
@@ -807,6 +888,7 @@ class Wav2VecEncoder(FairseqEncoder):
             "encoder_out": x,  # T x B x C
             "padding_mask": padding_mask,  # B x T,
             "layer_results": res["layer_results"],
+            "encoder_out_before_proj": x_before_proj,
         }
 
     def forward_torchscript(self, net_input):
@@ -1048,6 +1130,13 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         for layer in self.layers:
             dropout_probability = np.random.random()
             if not self.training or (dropout_probability > self.layerdrop):
+                # Tra()
+                '''
+                (Pdb) x.size(); encoder_out["encoder_out"].size();
+                torch.Size([116, 16, 768])
+                torch.Size([424, 16, 768])
+                '''
+
                 x, attn, _ = layer(
                     x,
                     encoder_out["encoder_out"] if encoder_out is not None else None,
