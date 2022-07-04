@@ -184,6 +184,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     ctc_target = sample["s2t_src_target_label"] if "s2t_src_target_label" in sample else sample["s2t_src_target"]
                 else:
                     ctc_target = sample["target_label"] if "target_label" in sample else sample["target"]
+                    
                 for lp, t, inp_l in zip(
                     lprobs_t,
                     ctc_target,
@@ -218,7 +219,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                         pred_units = self.s2t_src_dict.string(pred_units_arr)
                     else:
                         pred_units = self.tgt_dict.string(pred_units_arr)
-                        
+
                     pred_words_raw = post_process(pred_units, self.post_process).split()
 
                     dist = editdistance.eval(pred_words_raw, targ_words)

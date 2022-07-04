@@ -68,7 +68,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         self.ignore_prefix_size = ignore_prefix_size
         self.report_accuracy = report_accuracy
 
-    def forward(self, model, sample, reduce=True):
+    def forward(self, model, sample, reduce=True, greedy_decoding=False):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -92,7 +92,11 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
             n_correct, total = self.compute_accuracy(model, net_output, sample)
             logging_output["n_correct"] = utils.item(n_correct.data)
             logging_output["total"] = utils.item(total.data)
-        return loss, sample_size, logging_output
+
+        if greedy_decoding:
+            return loss, sample_size, logging_output, net_output
+        else:
+            return loss, sample_size, logging_output
 
     def get_lprobs_and_target(self, model, net_output, sample):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
