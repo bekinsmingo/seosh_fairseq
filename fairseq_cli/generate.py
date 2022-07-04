@@ -24,10 +24,10 @@ from fairseq.dataclass.utils import convert_namespace_to_omegaconf
 from fairseq.logging import progress_bar
 from fairseq.logging.meters import StopwatchMeter, TimeMeter
 
+from pdb import set_trace as Tra
+
 
 def main(cfg: DictConfig):
-
-    # import pdb; pdb.set_trace()
 
     if isinstance(cfg, Namespace):
         cfg = convert_namespace_to_omegaconf(cfg)
@@ -92,14 +92,7 @@ def _main(cfg: DictConfig, output_file):
         
     tgt_dict = task.target_dictionary
 
-    # import pdb; pdb.set_trace() 
-    # (Pdb) tgt_dict # why tgt_dict is None?
-
-    # import pdb; pdb.set_trace()
-
     overrides = ast.literal_eval(cfg.common_eval.model_overrides)
-
-    # import pdb; pdb.set_trace()
 
     # Load ensemble
     logger.info("loading model(s) from {}".format(cfg.common_eval.path))
@@ -111,7 +104,6 @@ def _main(cfg: DictConfig, output_file):
         strict=(cfg.checkpoint.checkpoint_shard_count == 1),
         num_shards=cfg.checkpoint.checkpoint_shard_count,
     )
-    # import pdb; pdb.set_trace()
 
     # loading the dataset should happen after the checkpoint has been loaded so we can give it the saved task config
     task.load_dataset(cfg.dataset.gen_subset, task_cfg=saved_cfg.task)
@@ -178,8 +170,6 @@ def _main(cfg: DictConfig, output_file):
     generator = task.build_generator(
         models, cfg.generation, extra_gen_cls_kwargs=extra_gen_cls_kwargs
     )
-
-    # import pdb; pdb.set_trace()
 
     # Handle tokenization and BPE
     tokenizer = task.build_tokenizer(cfg.tokenizer)
@@ -266,8 +256,6 @@ def _main(cfg: DictConfig, output_file):
         num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
         gen_timer.stop(num_generated_tokens)
 
-        import pdb; pdb.set_trace()
-
         ###################################################################################################
 
         for i, sample_id in enumerate(sample["id"].tolist()):
@@ -281,7 +269,6 @@ def _main(cfg: DictConfig, output_file):
             else:
                 src_tokens = None
 
-            # import pdb; pdb.set_trace()
             '''
             <<< ================== w2v2_seq2seq debugging ================== >>>
 
@@ -511,7 +498,6 @@ def cli_main():
         "model args (e.g. `AudioPretraining`)",
     )
     args = options.parse_args_and_arch(parser)
-    # import pdb;pdb.set_trace()
     main(args)
 
 
