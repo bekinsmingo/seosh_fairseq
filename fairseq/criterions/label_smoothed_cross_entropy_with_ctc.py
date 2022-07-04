@@ -173,71 +173,97 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
             with torch.no_grad():
                 lprobs_t = ctc_lprobs.transpose(0, 1).float().contiguous().cpu()
+                result = self.comput_wer(sample, lprobs_t, input_lengths)
 
-                c_err = 0
-                c_len = 0
-                w_errs = 0
-                w_len = 0
-                wv_errs = 0
-
-                if self.s2t_src_joint_ctc:
-                    ctc_target = sample["s2t_src_target_label"] if "s2t_src_target_label" in sample else sample["s2t_src_target"]
+                if self.only_inter_ctc:
+                    logging_output["inter_ctc_wv_errors"] = result["ctc_wv_errors"]
+                    logging_output["inter_ctc_w_errors"] = result["ctc_w_errors"]
+                    logging_output["inter_ctc_w_total"] = result["ctc_w_total"]
+                    logging_output["inter_ctc_c_errors"] = result["ctc_c_errors"]
+                    logging_output["inter_ctc_c_total"] = result["ctc_c_total"]
                 else:
-                    ctc_target = sample["target_label"] if "target_label" in sample else sample["target"]
-                    
-                for lp, t, inp_l in zip(
-                    lprobs_t,
-                    ctc_target,
-                    input_lengths,
-                ):
-                    ## only support greedy deconding, not ngram decoding
-                    lp = lp[:inp_l].unsqueeze(0)
+                    logging_output["ctc_wv_errors"] = result["ctc_wv_errors"]
+                    logging_output["ctc_w_errors"] = result["ctc_w_errors"]
+                    logging_output["ctc_w_total"] = result["ctc_w_total"]
+                    logging_output["ctc_c_errors"] = result["ctc_c_errors"]
+                    logging_output["ctc_c_total"] = result["ctc_c_total"]
 
-                    if self.s2t_src_joint_ctc :
-                        p = (t != self.s2t_src_dict.pad()) & (t != self.s2t_src_dict.eos())
-                    else:
-                        p = (t != self.tgt_dict.pad()) & (t != self.tgt_dict.eos())
-
-                    targ = t[p]
-
-                    if self.s2t_src_joint_ctc :
-                        targ_units = self.s2t_src_dict.string(targ)
-                    else:
-                        targ_units = self.tgt_dict.string(targ)
-
-                    targ_units_arr = targ.tolist()
-
-                    toks = lp.argmax(dim=-1).unique_consecutive()
-                    pred_units_arr = toks[toks != self.blank_idx].tolist()
-
-                    c_err += editdistance.eval(pred_units_arr, targ_units_arr)
-                    c_len += len(targ_units_arr)
-
-                    targ_words = post_process(targ_units, self.post_process).split()
-
-                    if self.s2t_src_joint_ctc:
-                        pred_units = self.s2t_src_dict.string(pred_units_arr)
-                    else:
-                        pred_units = self.tgt_dict.string(pred_units_arr)
-
-                    pred_words_raw = post_process(pred_units, self.post_process).split()
-
-                    dist = editdistance.eval(pred_words_raw, targ_words)
-                    w_errs += dist
-                    wv_errs += dist
-
-                    w_len += len(targ_words)
-
-                logging_output["ctc_wv_errors"] = wv_errs
-                logging_output["ctc_w_errors"] = w_errs
-                logging_output["ctc_w_total"] = w_len
-                logging_output["ctc_c_errors"] = c_err
-                logging_output["ctc_c_total"] = c_len
+                    if self.inter_ctc:
+                        inter_lprobs_t = inter_ctc_lprobs.transpose(0, 1).float().contiguous().cpu()
+                        inter_result = self.comput_wer(sample, inter_lprobs_t, input_lengths)
+                        logging_output["inter_ctc_wv_errors"] = inter_result["ctc_wv_errors"]
+                        logging_output["inter_ctc_w_errors"] = inter_result["ctc_w_errors"]
+                        logging_output["inter_ctc_w_total"] = inter_result["ctc_w_total"]
+                        logging_output["inter_ctc_c_errors"] = inter_result["ctc_c_errors"]
+                        logging_output["inter_ctc_c_total"] = inter_result["ctc_c_total"]
 
         if greedy_decoding:
             return loss, sample_size, logging_output, net_output
         else:
             return loss, sample_size, logging_output
+
+    def comput_wer(self, sample, lprobs_t, input_lengths):
+        c_err = 0
+        c_len = 0
+        w_errs = 0
+        w_len = 0
+        wv_errs = 0
+
+        if self.s2t_src_joint_ctc:
+            ctc_target = sample["s2t_src_target_label"] if "s2t_src_target_label" in sample else sample["s2t_src_target"]
+        else:
+            ctc_target = sample["target_label"] if "target_label" in sample else sample["target"]
+            
+        for lp, t, inp_l in zip(
+            lprobs_t,
+            ctc_target,
+            input_lengths,
+        ):
+            ## only support greedy deconding, not ngram decoding
+            lp = lp[:inp_l].unsqueeze(0)
+
+            if self.s2t_src_joint_ctc :
+                p = (t != self.s2t_src_dict.pad()) & (t != self.s2t_src_dict.eos())
+            else:
+                p = (t != self.tgt_dict.pad()) & (t != self.tgt_dict.eos())
+
+            targ = t[p]
+
+            if self.s2t_src_joint_ctc :
+                targ_units = self.s2t_src_dict.string(targ)
+            else:
+                targ_units = self.tgt_dict.string(targ)
+
+            targ_units_arr = targ.tolist()
+
+            toks = lp.argmax(dim=-1).unique_consecutive()
+            pred_units_arr = toks[toks != self.blank_idx].tolist()
+
+            c_err += editdistance.eval(pred_units_arr, targ_units_arr)
+            c_len += len(targ_units_arr)
+
+            targ_words = post_process(targ_units, self.post_process).split()
+
+            if self.s2t_src_joint_ctc:
+                pred_units = self.s2t_src_dict.string(pred_units_arr)
+            else:
+                pred_units = self.tgt_dict.string(pred_units_arr)
+
+            pred_words_raw = post_process(pred_units, self.post_process).split()
+
+            dist = editdistance.eval(pred_words_raw, targ_words)
+            w_errs += dist
+            wv_errs += dist
+
+            w_len += len(targ_words)
+
+            return {
+                "ctc_wv_errors" : wv_errs,
+                "ctc_w_errors" : w_errs,
+                "ctc_w_total" : w_len,
+                "ctc_c_errors" : c_err,
+                "ctc_c_total" : c_len,
+            }
 
     def compute_mwer_loss(self, model, sample):
         # this is currently not supported, because i can't find which part is non-differentiable
@@ -376,6 +402,47 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     meters["_ctc_wv_errors"].sum * 100.0 / meters["_ctc_w_total"].sum, 3
                 )
                 if meters["_ctc_w_total"].sum > 0
+                else float("nan"),
+            )
+
+        ## inter ctc wer
+
+        c_errors = sum(log.get("inter_ctc_c_errors", 0) for log in logging_outputs)
+        metrics.log_scalar("_inter_ctc_c_errors", c_errors)
+        c_total = sum(log.get("inter_ctc_c_total", 0) for log in logging_outputs)
+        metrics.log_scalar("_inter_ctc_c_total", c_total)
+        w_errors = sum(log.get("inter_ctc_w_errors", 0) for log in logging_outputs)
+        metrics.log_scalar("_inter_ctc_w_errors", w_errors)
+        wv_errors = sum(log.get("inter_ctc_wv_errors", 0) for log in logging_outputs)
+        metrics.log_scalar("_inter_ctc_wv_errors", wv_errors)
+        w_total = sum(log.get("inter_ctc_w_total", 0) for log in logging_outputs)
+        metrics.log_scalar("_inter_ctc_w_total", w_total)
+
+
+        if c_total > 0:
+            metrics.log_derived(
+                "inter_ctc_uer",
+                lambda meters: safe_round(
+                    meters["_inter_ctc_c_errors"].sum * 100.0 / meters["_inter_ctc_c_total"].sum, 3
+                )
+                if meters["_inter_ctc_c_total"].sum > 0
+                else float("nan"),
+            )
+        if w_total > 0:
+            metrics.log_derived(
+                "inter_ctc_wer",
+                lambda meters: safe_round(
+                    meters["_inter_ctc_w_errors"].sum * 100.0 / meters["_inter_ctc_w_total"].sum, 3
+                )
+                if meters["_inter_ctc_w_total"].sum > 0
+                else float("nan"),
+            )
+            metrics.log_derived(
+                "inter_ctc_raw_wer",
+                lambda meters: safe_round(
+                    meters["_inter_ctc_wv_errors"].sum * 100.0 / meters["_inter_ctc_w_total"].sum, 3
+                )
+                if meters["_inter_ctc_w_total"].sum > 0
                 else float("nan"),
             )
 

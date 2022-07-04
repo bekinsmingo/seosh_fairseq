@@ -411,40 +411,51 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
         # load_pretrained_w2v_ctc_from
 
-        # arg_overrides = {
-        #     "dropout": cfg.dropout,
-        #     "activation_dropout": cfg.activation_dropout,
-        #     "dropout_input": cfg.dropout_input,
-        #     "attention_dropout": cfg.attention_dropout,
-        #     "mask_length": cfg.mask_length,
-        #     "mask_prob": cfg.mask_prob,
-        #     "require_same_masks": getattr(cfg, "require_same_masks", True),
-        #     "pct_holes": getattr(cfg, "mask_dropout", 0),
-        #     "mask_selection": cfg.mask_selection,
-        #     "mask_other": cfg.mask_other,
-        #     "no_mask_overlap": cfg.no_mask_overlap,
-        #     "mask_channel_length": cfg.mask_channel_length,
-        #     "mask_channel_prob": cfg.mask_channel_prob,
-        #     "mask_channel_before": cfg.mask_channel_before,
-        #     "mask_channel_selection": cfg.mask_channel_selection,
-        #     "mask_channel_other": cfg.mask_channel_other,
-        #     "no_mask_channel_overlap": cfg.no_mask_channel_overlap,
-        #     "encoder_layerdrop": cfg.layerdrop,
-        #     "feature_grad_mult": cfg.feature_grad_mult,
-        #     "checkpoint_activations": cfg.checkpoint_activations,
-        #     "offload_activations": cfg.offload_activations,
-        #     "min_params_to_wrap": cfg.min_params_to_wrap,
-        # }
-
         if cfg.load_pretrained_w2v_ctc_from:
             logger.info("| loading pretrained w2v2-ctc model from {}".format(cfg.load_pretrained_w2v_ctc_from))
             import os
             import copy
             path, checkpoint = os.path.split(cfg.load_pretrained_w2v_ctc_from)
-            arg_overrides = {
-                "task": {"_name":'audio_finetuning', "data": path},
-                "model": {"_name": 'wav2vec_ctc_for_s2t'}
+
+            w2v_arg_overrides = {
+                    "encoder_layerdrop": cfg.layerdrop,
+                    "dropout": cfg.dropout,
+                    "activation_dropout": cfg.activation_dropout,
+                    "dropout_input": cfg.dropout_input,
+                    "attention_dropout": cfg.attention_dropout,
+                    "mask_length": cfg.mask_length,
+                    "mask_prob": cfg.mask_prob,
+                    "require_same_masks": getattr(cfg, "require_same_masks", True),
+                    "pct_holes": getattr(cfg, "mask_dropout", 0),
+                    "mask_selection": cfg.mask_selection,
+                    "mask_other": cfg.mask_other,
+                    "no_mask_overlap": cfg.no_mask_overlap,
+                    "mask_channel_length": cfg.mask_channel_length,
+                    "mask_channel_prob": cfg.mask_channel_prob,
+                    "mask_channel_before": cfg.mask_channel_before,
+                    "mask_channel_selection": cfg.mask_channel_selection,
+                    "mask_channel_other": cfg.mask_channel_other,
+                    "no_mask_channel_overlap": cfg.no_mask_channel_overlap,
+                    "feature_grad_mult": cfg.feature_grad_mult,
+                    "checkpoint_activations": cfg.checkpoint_activations,
+                    "offload_activations": cfg.offload_activations,
+                    "min_params_to_wrap": cfg.min_params_to_wrap,
             }
+
+            arg_overrides = {
+                "task": {
+                    "_name":'audio_finetuning', 
+                    "data": path
+                    },
+                "model": {
+                    "_name": 'wav2vec_ctc_for_s2t',
+                    "freeze_finetune_updates": cfg.freeze_finetune_updates,
+                    "w2v_args" : {
+                        "model": w2v_arg_overrides
+                        }
+                    }
+            }
+
             w2v_ctc_models, w2v_ctc_cfg, w2v_ctc_task = checkpoint_utils.load_model_ensemble_and_task(
                 utils.split_paths(cfg.load_pretrained_w2v_ctc_from, separator="\\"),
                 arg_overrides=arg_overrides,
@@ -469,6 +480,12 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
                 w2v_ctc._modules['proj'] = proj
 
             # Tra()
+            '''
+            (Pdb) w2v_ctc.w2v_model.encoder.layerdrop
+            0.0
+            (Pdb) w2v_ctc.freeze_finetune_updates
+            6000
+            '''
 
             return w2v_ctc
         else:
@@ -714,6 +731,8 @@ class Wav2Vec2Transducer(BaseFairseqModel):
 class Wav2VecEncoder(FairseqEncoder):
     def __init__(self, cfg: Wav2Vec2AsrConfig, output_size=None, ctc_proj_dim=None):
         self.apply_mask = cfg.apply_mask
+
+        self.cfg = cfg
 
         arg_overrides = {
             "dropout": cfg.dropout,
