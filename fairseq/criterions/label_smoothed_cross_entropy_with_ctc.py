@@ -25,6 +25,10 @@ from omegaconf import II
 
 from pdb import set_trace as Tra
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class LabelSmoothedCrossEntropyWithCtcCriterionConfig(
     LabelSmoothedCrossEntropyCriterionConfig
@@ -37,6 +41,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterionConfig(
     only_inter_ctc: bool = field(default=False, metadata={"help": "only use intermediate CTC loss"})
     s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
     joint_ctc_training_updates: int = field(default=0, metadata={"help": "tmp"})
+
+    eval_ctc_print: bool = field(default=True, metadata={"help": "tmp"})
 
     mwer_training: bool = field(default=False, metadata={"help": "mwer training with nbest hypos"})
     mwer_training_updates: int = field(default=10000, metadata={"help": "tmp"})
@@ -60,6 +66,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         inter_ctc,
         only_inter_ctc,
         joint_ctc_training_updates,
+        eval_ctc_print,
         mwer_training,
         mwer_training_updates,
         mwer_weight,
@@ -74,6 +81,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         self.inter_ctc = inter_ctc
         self.only_inter_ctc = only_inter_ctc
         self.joint_ctc_training_updates = joint_ctc_training_updates
+
+        self.eval_ctc_print = eval_ctc_print
 
         self.mwer_training = mwer_training
         self.mwer_training_updates = mwer_training_updates
@@ -173,7 +182,10 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
             with torch.no_grad():
                 lprobs_t = ctc_lprobs.transpose(0, 1).float().contiguous().cpu()
-                result = self.comput_wer(sample, lprobs_t, input_lengths)
+                result, tgt, hyp = self.comput_wer(sample, lprobs_t, input_lengths)
+
+                if self.eval_ctc_print:
+                    logger.info("Target T-{} {}".format(sample["id"][0], ' '.join(tgt)))
 
                 if self.only_inter_ctc:
                     logging_output["inter_ctc_wv_errors"] = result["ctc_wv_errors"]
@@ -181,6 +193,10 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     logging_output["inter_ctc_w_total"] = result["ctc_w_total"]
                     logging_output["inter_ctc_c_errors"] = result["ctc_c_errors"]
                     logging_output["inter_ctc_c_total"] = result["ctc_c_total"]
+
+                    if self.eval_ctc_print:
+                        logger.info("Inter  H-{} {}".format(sample["id"][0], ' '.join(hyp)))
+
                 else:
                     logging_output["ctc_wv_errors"] = result["ctc_wv_errors"]
                     logging_output["ctc_w_errors"] = result["ctc_w_errors"]
@@ -188,82 +204,29 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                     logging_output["ctc_c_errors"] = result["ctc_c_errors"]
                     logging_output["ctc_c_total"] = result["ctc_c_total"]
 
+                    if self.eval_ctc_print:
+                        logger.info("Joint  H-{} {}".format(sample["id"][0], ' '.join(hyp)))
+
                     if self.inter_ctc:
                         inter_lprobs_t = inter_ctc_lprobs.transpose(0, 1).float().contiguous().cpu()
-                        inter_result = self.comput_wer(sample, inter_lprobs_t, input_lengths)
+                        inter_result, _, inter_hyp = self.comput_wer(sample, inter_lprobs_t, input_lengths)
                         logging_output["inter_ctc_wv_errors"] = inter_result["ctc_wv_errors"]
                         logging_output["inter_ctc_w_errors"] = inter_result["ctc_w_errors"]
                         logging_output["inter_ctc_w_total"] = inter_result["ctc_w_total"]
                         logging_output["inter_ctc_c_errors"] = inter_result["ctc_c_errors"]
                         logging_output["inter_ctc_c_total"] = inter_result["ctc_c_total"]
 
+                        if self.eval_ctc_print:
+                            logger.info("Inter  H-{} {}".format(sample["id"][0], ' '.join(inter_hyp)))
+
+                if self.eval_ctc_print:
+                    logger.info("============================================================")
+
         if greedy_decoding:
             return loss, sample_size, logging_output, net_output
         else:
             return loss, sample_size, logging_output
 
-    def comput_wer(self, sample, lprobs_t, input_lengths):
-        c_err = 0
-        c_len = 0
-        w_errs = 0
-        w_len = 0
-        wv_errs = 0
-
-        if self.s2t_src_joint_ctc:
-            ctc_target = sample["s2t_src_target_label"] if "s2t_src_target_label" in sample else sample["s2t_src_target"]
-        else:
-            ctc_target = sample["target_label"] if "target_label" in sample else sample["target"]
-            
-        for lp, t, inp_l in zip(
-            lprobs_t,
-            ctc_target,
-            input_lengths,
-        ):
-            ## only support greedy deconding, not ngram decoding
-            lp = lp[:inp_l].unsqueeze(0)
-
-            if self.s2t_src_joint_ctc :
-                p = (t != self.s2t_src_dict.pad()) & (t != self.s2t_src_dict.eos())
-            else:
-                p = (t != self.tgt_dict.pad()) & (t != self.tgt_dict.eos())
-
-            targ = t[p]
-
-            if self.s2t_src_joint_ctc :
-                targ_units = self.s2t_src_dict.string(targ)
-            else:
-                targ_units = self.tgt_dict.string(targ)
-
-            targ_units_arr = targ.tolist()
-
-            toks = lp.argmax(dim=-1).unique_consecutive()
-            pred_units_arr = toks[toks != self.blank_idx].tolist()
-
-            c_err += editdistance.eval(pred_units_arr, targ_units_arr)
-            c_len += len(targ_units_arr)
-
-            targ_words = post_process(targ_units, self.post_process).split()
-
-            if self.s2t_src_joint_ctc:
-                pred_units = self.s2t_src_dict.string(pred_units_arr)
-            else:
-                pred_units = self.tgt_dict.string(pred_units_arr)
-
-            pred_words_raw = post_process(pred_units, self.post_process).split()
-
-            dist = editdistance.eval(pred_words_raw, targ_words)
-            w_errs += dist
-            wv_errs += dist
-
-            w_len += len(targ_words)
-
-            return {
-                "ctc_wv_errors" : wv_errs,
-                "ctc_w_errors" : w_errs,
-                "ctc_w_total" : w_len,
-                "ctc_c_errors" : c_err,
-                "ctc_c_total" : c_len,
-            }
 
     def compute_mwer_loss(self, model, sample):
         # this is currently not supported, because i can't find which part is non-differentiable
@@ -345,6 +308,88 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         return torch.stack(mwer_loss).sum()
         # return torch.stack(mwer_loss).mean()
 
+
+    def comput_wer(self, sample, lprobs_t, input_lengths):
+        c_err = 0
+        c_len = 0
+        w_errs = 0
+        w_len = 0
+        wv_errs = 0
+
+        if self.s2t_src_joint_ctc:
+            ctc_target = sample["s2t_src_target_label"] if "s2t_src_target_label" in sample else sample["s2t_src_target"]
+        else:
+            ctc_target = sample["target_label"] if "target_label" in sample else sample["target"]
+            
+        for lp, t, inp_l in zip(
+            lprobs_t,
+            ctc_target,
+            input_lengths,
+        ):
+            ## only support greedy deconding, not ngram decoding
+            lp = lp[:inp_l].unsqueeze(0)
+
+            if self.s2t_src_joint_ctc :
+                p = (t != self.s2t_src_dict.pad()) & (t != self.s2t_src_dict.eos())
+            else:
+                p = (t != self.tgt_dict.pad()) & (t != self.tgt_dict.eos())
+
+            targ = t[p]
+
+            if self.s2t_src_joint_ctc :
+                targ_units = self.s2t_src_dict.string(targ)
+            else:
+                targ_units = self.tgt_dict.string(targ)
+
+            targ_units_arr = targ.tolist()
+
+            toks = lp.argmax(dim=-1).unique_consecutive()
+            pred_units_arr = toks[toks != self.blank_idx].tolist()
+
+            c_err += editdistance.eval(pred_units_arr, targ_units_arr)
+            c_len += len(targ_units_arr)
+
+            targ_words = post_process(targ_units, self.post_process).split()
+
+            '''
+
+            (Pdb) targ_units_arr
+            [16, 5311, 38, 12, 21, 1237, 30, 8, 6616, 73, 50, 318, 1136, 30, 8, 429, 803, 42, 4, 492, 137, 30, 59, 23, 74, 260, 4060, 
+            609, 232, 7871, 27, 17, 1857, 9, 6, 16, 7970, 6808, 1428, 1315, 9, 13, 1826, 8, 441, 7, 223, 57, 4060, 5779, 9, 13, 4292, 
+            27, 1973, 145, 340, 1742, 9, 13, 129, 98, 4, 904, 1445, 622, 508, 9, 13, 263, 237, 4, 589, 5, 93, 805, 3976, 8210, 9, 13, 3109, 5, 7214, 35, 2084, 268]
+            (Pdb) targ_words
+            ['HIS', 'ABODE', 'WHICH', 'HE', 'HAD', 'FIXED', 'AT', 'A', 'BOWERY', 'OR', 'COUNTRY', 'SEAT', 'AT', 'A', 'SHORT', 
+            'DISTANCE', 'FROM', 'THE', 'CITY', 'JUST', 'AT', 'WHAT', 'IS', 'NOW', 'CALLED', 'DUTCH', 'STREET', 'SOON', 'ABOUNDED', 
+            'WITH', 'PROOFS', 'OF', 'HIS', 'INGENUITY', 'PATENT', 'SMOKE', 'JACKS', 'THAT', 'REQUIRED', 'A', 'HORSE', 'TO', 'WORK', 
+            'THEM', 'DUTCH', 'OVENS', 'THAT', 'ROASTED', 'MEAT', 'WITHOUT', 'FIRE', 'CARTS', 'THAT', 'WENT', 'BEFORE', 'THE', 'HORSES', 
+            'WEATHERCOCKS', 'THAT', 'TURNED', 'AGAINST', 'THE', 'WIND', 'AND', 'OTHER', 'WRONG', 'HEADED', 'CONTRIVANCES', 'THAT', 'ASTONISHED', 'AND', 'CONFOUNDED', 'ALL', 'BEHOLDERS']
+            '''
+
+            # Tra()
+
+            if self.s2t_src_joint_ctc:
+                pred_units = self.s2t_src_dict.string(pred_units_arr)
+            else:
+                pred_units = self.tgt_dict.string(pred_units_arr)
+
+            pred_words_raw = post_process(pred_units, self.post_process).split()
+
+            dist = editdistance.eval(pred_words_raw, targ_words)
+            w_errs += dist
+            wv_errs += dist
+
+            w_len += len(targ_words)
+
+            result = {
+                "ctc_wv_errors" : wv_errs,
+                "ctc_w_errors" : w_errs,
+                "ctc_w_total" : w_len,
+                "ctc_c_errors" : c_err,
+                "ctc_c_total" : c_len,
+            }
+
+            return result, targ_words, pred_words_raw
+
     @classmethod
     def reduce_metrics(cls, logging_outputs) -> None:
         super().reduce_metrics(logging_outputs)
@@ -366,6 +411,8 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
         metrics.log_scalar(
             "mwer_loss", mwer_loss_sum / sample_size / math.log(2), sample_size, round=3
         )
+
+        ############################## joint ctc wer ##############################
 
         c_errors = sum(log.get("ctc_c_errors", 0) for log in logging_outputs)
         metrics.log_scalar("_ctc_c_errors", c_errors)
@@ -405,7 +452,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                 else float("nan"),
             )
 
-        ## inter ctc wer
+        ############################## inter ctc wer ##############################
 
         c_errors = sum(log.get("inter_ctc_c_errors", 0) for log in logging_outputs)
         metrics.log_scalar("_inter_ctc_c_errors", c_errors)

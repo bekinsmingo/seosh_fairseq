@@ -272,18 +272,24 @@ class Wav2VecCtc(BaseFairseqModel):
         return x
 
 
-@dataclass
-class Wav2Vec2CtcForS2TConfig(Wav2Vec2CtcConfig):
-    s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
+# @dataclass
+# class Wav2Vec2CtcForS2TConfig(Wav2Vec2CtcConfig):
+#     s2t_src_joint_ctc: bool = II("task.s2t_src_joint_ctc")
 
-@register_model("wav2vec_ctc_for_s2t", dataclass=Wav2Vec2CtcForS2TConfig)
+@register_model("wav2vec_ctc_for_s2t", dataclass=Wav2Vec2CtcConfig)
 class Wav2VecCtcForS2T(Wav2VecCtc):
-    def __init__(self, cfg: Wav2Vec2CtcForS2TConfig, w2v_encoder: BaseFairseqModel):
+    def __init__(self, cfg: Wav2Vec2CtcConfig, w2v_encoder: BaseFairseqModel):
         super().__init__(cfg, w2v_encoder)
 
     @classmethod
-    def build_model(cls, cfg: Wav2Vec2CtcForS2TConfig, task: FairseqTask):
-        w2v_encoder = Wav2VecEncoder(cfg, len(task.target_dictionary), len(task.target_dictionary))
+    def build_model(cls, cfg: Wav2Vec2CtcConfig, task: FairseqTask):
+        # Tra()
+        # w2v_encoder = Wav2VecEncoder(cfg, len(task.target_dictionary), len(task.target_dictionary))
+        if task.cfg.s2t_src_joint_ctc:
+            w2v_encoder = Wav2VecEncoder(cfg, len(task.source_dictionary), len(task.source_dictionary))
+        else:
+            w2v_encoder = Wav2VecEncoder(cfg, len(task.target_dictionary), len(task.target_dictionary))
+
         return cls(cfg, w2v_encoder)
 
 
@@ -389,9 +395,17 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
             cfg.autoregressive
         ), "Please set task.autoregressive=true for seq2seq asr models"
 
+        # Tra()
 
-        src_dict = task.source_dictionary if cfg.s2t_src_joint_ctc else None
+        src_dict = task.source_dictionary if task.cfg.s2t_src_joint_ctc else None
         tgt_dict = task.target_dictionary
+
+        '''
+        (Pdb) len(src_dict)
+        97
+        (Pdb) len(tgt_dict)
+        2562
+        '''
 
         def build_embedding(dictionary, embed_dim):
             num_embeddings = len(dictionary)
@@ -401,13 +415,13 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
         decoder_embed_tokens = build_embedding(tgt_dict, cfg.decoder_embed_dim)
 
-        encoder = cls.build_encoder(cfg, src_dict if cfg.s2t_src_joint_ctc and src_dict else tgt_dict)
+        encoder = cls.build_encoder(cfg, src_dict if task.cfg.s2t_src_joint_ctc and src_dict else tgt_dict, task.cfg)
         decoder = cls.build_decoder(cfg, tgt_dict, decoder_embed_tokens)
 
         return Wav2Vec2Seq2SeqModel(cfg, encoder, decoder)
 
     @classmethod
-    def build_encoder(cls, cfg: Wav2Vec2AsrConfig, tgt_dict):
+    def build_encoder(cls, cfg: Wav2Vec2AsrConfig, tgt_dict, task_cfg=None):
 
         # load_pretrained_w2v_ctc_from
 
@@ -415,7 +429,8 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
             logger.info("| loading pretrained w2v2-ctc model from {}".format(cfg.load_pretrained_w2v_ctc_from))
             import os
             import copy
-            path, checkpoint = os.path.split(cfg.load_pretrained_w2v_ctc_from)
+            
+            model_dir_path, checkpoint = os.path.split(cfg.load_pretrained_w2v_ctc_from)
 
             w2v_arg_overrides = {
                     "encoder_layerdrop": cfg.layerdrop,
@@ -442,16 +457,23 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
                     "min_params_to_wrap": cfg.min_params_to_wrap,
             }
 
+            # Tra()
             arg_overrides = {
                 "task": {
                     "_name":'audio_finetuning', 
-                    "data": path
+                    # "data": model_dir_path,
+                    "data": task_cfg.data,
+                    "s2t_src_joint_ctc": cfg.s2t_src_joint_ctc,
+                    "s2t_src_data": task_cfg.s2t_src_data,
                     },
                 "model": {
                     "_name": 'wav2vec_ctc_for_s2t',
                     "freeze_finetune_updates": cfg.freeze_finetune_updates,
                     "w2v_args" : {
-                        "model": w2v_arg_overrides
+                        "model": w2v_arg_overrides,
+                        "task": {
+                            "data": task_cfg.data if not cfg.s2t_src_joint_ctc else task_cfg.s2t_src_data
+                            }
                         }
                     }
             }
@@ -464,7 +486,6 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
             w2v_ctc = w2v_ctc_models[0].w2v_encoder
             encoder_out_dim = w2v_ctc.proj.weight.size(1)
-
             # Tra()
 
             # for joint ctc
@@ -478,8 +499,8 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
             if cfg.decoder_embed_dim != encoder_out_dim:
                 proj = Linear(encoder_out_dim, cfg.decoder_embed_dim)
                 w2v_ctc._modules['proj'] = proj
-
             # Tra()
+
             '''
             (Pdb) w2v_ctc.w2v_model.encoder.layerdrop
             0.0
@@ -759,6 +780,9 @@ class Wav2VecEncoder(FairseqEncoder):
             "min_params_to_wrap": cfg.min_params_to_wrap,
         }
 
+        # Tra()
+        # Why w2v2 seq2seq didnt save w2v_args? -> latest version has it
+
         if cfg.w2v_args is None:
             state = checkpoint_utils.load_checkpoint_to_cpu(cfg.w2v_path, arg_overrides)
             w2v_args = state.get("cfg", None)
@@ -794,6 +818,7 @@ class Wav2VecEncoder(FairseqEncoder):
 
         task = tasks.setup_task(w2v_args.task)
         model = task.build_model(w2v_args.model, from_checkpoint=True)
+        # Tra()
 
         model.remove_pretraining_modules()
 
@@ -801,6 +826,15 @@ class Wav2VecEncoder(FairseqEncoder):
             self.load_model_weights(state, model, cfg)
 
         super().__init__(task.source_dictionary)
+
+        '''
+        (Pdb) task.cfg
+        {'_name': 'audio_pretraining', 'data': '~', 
+        'labels': None, 'binarized_dataset': False, 'sample_rate': 16000, 'normalize': False, 'enable_padding': False, 'max_sample_size': 320000, 
+        'min_sample_size': 32000, 'num_batch_buckets': 0, 'precompute_mask_indices': False, 'inferred_w2v_config': None, 'tpu': False, 'text_compression_level': none}
+        (Pdb) task.source_dictionary
+        (Pdb) task.target_dictionary
+        '''
 
         d = w2v_args.model.encoder_embed_dim
 

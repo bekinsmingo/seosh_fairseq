@@ -44,20 +44,28 @@ class AddTargetDataset(BaseWrapperDataset):
 
     def get_label(self, index, process_fn=None):
         lbl = self.labels[index]
+        # print('lbl', lbl)
         lbl = self.text_compressor.decompress(lbl)
+        # print('lbl after', lbl)
         return lbl if process_fn is None else process_fn(lbl)
 
     def get_s2t_src_label(self, index, process_fn=None):
         lbl = self.s2t_src_labels[index]
+        # print('src lbl', lbl)
         lbl = self.text_compressor.decompress(lbl)
+        # print('src lbl after', lbl)
         return lbl if process_fn is None else process_fn(lbl)
 
     def __getitem__(self, index):
         item = self.dataset[index]
         # print('item',item)
         item["label"] = self.get_label(index, process_fn=self.process_label)
+        # print('target', self.text_compressor.decompress(self.labels[index]))
+        # print('lbl after all', item["label"])
         if self.s2t_src_labels:
             item["s2t_src_label"] = self.get_s2t_src_label(index, process_fn=self.s2t_src_process_label)
+            # print('src target', self.text_compressor.decompress(self.s2t_src_labels[index]))
+            # print('src lbl after all', item["s2t_src_label"])
         return item
 
     def size(self, index):
@@ -83,6 +91,9 @@ class AddTargetDataset(BaseWrapperDataset):
 
         if self.s2t_src_labels:
             s2t_src_target = [s["s2t_src_label"] for s in samples if s["id"] in indices]
+
+        # print('s2t_src_target', s2t_src_target)
+        # print('target', target)
 
         if self.add_to_input:
             eos = torch.LongTensor([self.eos])

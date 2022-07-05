@@ -17,6 +17,7 @@ from fairseq.dataclass.utils import gen_parser_from_dataclass
 from fairseq.optim.amp_optimizer import AMPOptimizer
 from omegaconf import DictConfig
 
+from pdb import set_trace as Tra
 
 logger = logging.getLogger(__name__)
 
@@ -838,9 +839,8 @@ class LegacyFairseqTask(FairseqTask):
         """
         from fairseq import models, quantization_utils
 
-        # import pdb; pdb.set_trace()
+        # Tra()
         model = models.build_model(args, self, from_checkpoint)
-        # import pdb; pdb.set_trace()
         model = quantization_utils.quantize_model_scalar(model, args)
         return model
 

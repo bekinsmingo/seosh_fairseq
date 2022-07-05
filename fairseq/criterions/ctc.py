@@ -19,6 +19,7 @@ from fairseq.data.data_utils import post_process
 from fairseq.tasks import FairseqTask
 from fairseq.logging.meters import safe_round
 
+from pdb import set_trace as Tra
 
 @dataclass
 class CtcCriterionConfig(FairseqDataclass):
@@ -107,6 +108,7 @@ class CtcCriterion(FairseqCriterion):
         self.sentence_avg = cfg.sentence_avg
 
     def forward(self, model, sample, reduce=True):
+        # Tra()
         net_output = model(**sample["net_input"])
         lprobs = model.get_normalized_probs(
             net_output, log_probs=True

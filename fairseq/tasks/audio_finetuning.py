@@ -228,6 +228,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
 
         s2t_src_labels = None
         s2t_src_process_label = None
+
         if self.cfg.s2t_src_joint_ctc:
             data_path = self.cfg.s2t_src_data
             label_path = os.path.join(data_path, f"{split}.{task_cfg.labels}")
@@ -239,6 +240,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
                     for i, l in enumerate(f)
                     if i not in skipped_indices
                 ]
+            
 
             assert len(s2t_src_labels) == len(self.datasets[split]), (
                 f"s2t soruce labels length ({len(s2t_src_labels)}) and dataset length "
@@ -246,7 +248,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
             )
             s2t_src_process_label = LabelEncoder(self.source_dictionary)
 
-        # Tra()
+            # Tra() # '\n' is included
 
         self.datasets[split] = AddTargetDataset(
             dataset=self.datasets[split],
@@ -340,6 +342,8 @@ class AudioFinetuningTask(AudioPretrainingTask):
     def build_model(self, model_cfg: FairseqDataclass, from_checkpoint=False):
         # import pdb; pdb.set_trace()
         model = super().build_model(model_cfg, from_checkpoint)
+
+        # Tra()
 
         if self.cfg.eval_wer and self.cfg.autoregressive:
             self.sequence_generator = self.build_generator(

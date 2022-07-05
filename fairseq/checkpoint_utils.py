@@ -336,6 +336,7 @@ def load_checkpoint_to_cpu(path, arg_overrides=None, load_on_all_ranks=False):
         OmegaConf.set_struct(state["cfg"], True)
 
         if arg_overrides is not None:
+            # Tra()
             overwrite_args_by_name(state["cfg"], arg_overrides)
 
     state = _upgrade_state_dict(state)
@@ -436,10 +437,19 @@ def load_model_ensemble_and_task(
             if task is None:
                 task = tasks.setup_task(cfg.task)
 
+            '''
+            if load ctc trained model for s2t
+
+            (Pdb) len(task.source_dictionary)
+            97
+            (Pdb) len(task.target_dictionary)
+            2562
+            '''
+
+            # Tra() 
+            # TODO : task state should be fixed
             if "task_state" in state:
                 task.load_state_dict(state["task_state"])
-
-            # import pdb; pdb.set_trace()
 
             if "fsdp_metadata" in state and num_shards > 1:
                 model_shard_state["shard_weights"].append(state["model"])
@@ -683,6 +693,7 @@ def _upgrade_state_dict(state):
 
         state["cfg"] = convert_namespace_to_omegaconf(state["args"])
 
+    # Tra()
     if "cfg" in state and state["cfg"] is not None:
         cfg = state["cfg"]
         with open_dict(cfg):

@@ -21,6 +21,10 @@ from fairseq.data.text_compressor import TextCompressionLevel
 
 from . import FairseqTask, register_task
 
+from pdb import set_trace as Tra
+
+from omegaconf import DictConfig, OmegaConf, open_dict
+
 logger = logging.getLogger(__name__)
 
 
@@ -210,12 +214,17 @@ class AudioPretrainingTask(FairseqTask):
         return sys.maxsize, sys.maxsize
 
     def build_model(self, model_cfg: FairseqDataclass, from_checkpoint=False):
+        # Tra()
         model = super().build_model(model_cfg, from_checkpoint)
+
+        ## bug detected ? where is w2v args?
+        ## model_cfg should have w2v_args
 
         actualized_cfg = getattr(model, "cfg", None)
         if actualized_cfg is not None:
             # if "w2v_args" in actualized_cfg:
             if hasattr(actualized_cfg, "w2v_args"):
                 model_cfg.w2v_args = actualized_cfg.w2v_args
+        # Tra()
 
         return model
