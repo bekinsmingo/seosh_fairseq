@@ -103,38 +103,41 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
 
         ctc_loss = torch.tensor(0.0).type_as(ce_loss)
         inter_ctc_loss = torch.tensor(0.0).type_as(ce_loss)
-        if (self.ctc_weight > 0.0) and (self.joint_ctc_training_updates <= model.encoder.num_updates):
-            ctc_lprobs, inter_ctc_lprobs, ctc_lens = model.get_ctc_output(net_output, sample, self.inter_ctc, self.only_inter_ctc)
-            ctc_tgt, ctc_tgt_lens = model.get_ctc_target(sample, self.s2t_src_joint_ctc)
-            # Tra()
-            ctc_tgt_mask = lengths_to_mask(ctc_tgt_lens)
-            ctc_tgt_flat = ctc_tgt.masked_select(ctc_tgt_mask)
-            reduction = "sum" if reduce else "none"
 
-            ctc_loss = (
-                F.ctc_loss(
-                    ctc_lprobs,
-                    ctc_tgt_flat,
-                    ctc_lens,
-                    ctc_tgt_lens,
-                    reduction=reduction,
-                    zero_infinity=True,
-                )
-            )
-            if (self.inter_ctc) and (not self.only_inter_ctc):
-                # Tra()
-                inter_ctc_loss = (
-                    F.ctc_loss(
-                        inter_ctc_lprobs,
-                        ctc_tgt_flat,
-                        ctc_lens,
-                        ctc_tgt_lens,
-                        reduction=reduction,
-                        zero_infinity=True,
+        if (self.joint_ctc_training_updates <= model.encoder.num_updates):
+
+            if (self.inter_ctc_weight > 0.0) or (self.ctc_weight > 0.0):
+
+                ctc_lprobs, inter_ctc_lprobs, ctc_lens = model.get_ctc_output(net_output, sample, self.inter_ctc, self.only_inter_ctc)
+                ctc_tgt, ctc_tgt_lens = model.get_ctc_target(sample, self.s2t_src_joint_ctc)
+
+                ctc_tgt_mask = lengths_to_mask(ctc_tgt_lens)
+                ctc_tgt_flat = ctc_tgt.masked_select(ctc_tgt_mask)
+                reduction = "sum" if reduce else "none"
+
+                if (self.ctc_weight > 0.0) and (ctc_lprobs is not None) and (not self.only_inter_ctc):
+                    ctc_loss = (
+                        F.ctc_loss(
+                            ctc_lprobs,
+                            ctc_tgt_flat,
+                            ctc_lens,
+                            ctc_tgt_lens,
+                            reduction=reduction,
+                            zero_infinity=True,
+                        )
                     )
-                )
 
-        # Tra()
+                if (self.inter_ctc_weight > 0.0) and (self.inter_ctc):
+                    inter_ctc_loss = (
+                        F.ctc_loss(
+                            inter_ctc_lprobs,
+                            ctc_tgt_flat,
+                            ctc_lens,
+                            ctc_tgt_lens,
+                            reduction=reduction,
+                            zero_infinity=True,
+                        )
+                    )
 
         mwer_loss = torch.tensor(0.0).type_as(ce_loss)
         if (self.mwer_training) and (self.mwer_training_updates <= model.encoder.num_updates):
@@ -168,48 +171,45 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             logging_output["n_correct"] = utils.item(n_correct.data)
             logging_output["total"] = utils.item(total.data)
 
-        if (not model.training) and (self.ctc_weight > 0.0) and (self.joint_ctc_training_updates <= model.encoder.num_updates):
-            if "src_lengths" in sample["net_input"]:
-                input_lengths = sample["net_input"]["src_lengths"]
-            else:
-                if net_output[-1]["padding_mask"] is not None:
-                    non_padding_mask = ~net_output[-1]["padding_mask"]
-                    input_lengths = non_padding_mask.long().sum(-1)
+        # if (not model.training) and (self.ctc_weight > 0.0) and (self.joint_ctc_training_updates <= model.encoder.num_updates):
+        if (not model.training) and (self.joint_ctc_training_updates <= model.encoder.num_updates):
+                
+            if (self.ctc_weight > 0.0) or (self.inter_ctc_weight > 0.0) :
+                if "src_lengths" in sample["net_input"]:
+                    input_lengths = sample["net_input"]["src_lengths"]
                 else:
-                    input_lengths = ctc_lprobs.new_full(
-                        (ctc_lprobs.size(1),), ctc_lprobs.size(0), dtype=torch.long
-                    )
+                    if net_output[-1]["padding_mask"] is not None:
+                        non_padding_mask = ~net_output[-1]["padding_mask"]
+                        input_lengths = non_padding_mask.long().sum(-1)
+                    else:
+                        if ctc_lprobs is not None:
+                            input_lengths = ctc_lprobs.new_full(
+                                (ctc_lprobs.size(1),), ctc_lprobs.size(0), dtype=torch.long
+                            )
+                        elif inter_ctc_lprobs is not None:
+                            input_lengths = inter_ctc_lprobs.new_full(
+                                (inter_ctc_lprobs.size(1),), inter_ctc_lprobs.size(0), dtype=torch.long
+                            )
 
-            with torch.no_grad():
-                lprobs_t = ctc_lprobs.transpose(0, 1).float().contiguous().cpu()
-                result, tgt, hyp = self.comput_wer(sample, lprobs_t, input_lengths)
+                with torch.no_grad():
 
-                if self.eval_ctc_print:
-                    logger.info("Target T-{} {}".format(sample["id"][0], ' '.join(tgt)))
+                    if (self.ctc_weight > 0.0) and (ctc_lprobs is not None) and (not self.only_inter_ctc):
+                        lprobs_t = ctc_lprobs.transpose(0, 1).float().contiguous().cpu()
+                        result, tgt, hyp = self.comput_wer(sample, lprobs_t, input_lengths)
 
-                if self.only_inter_ctc:
-                    logging_output["inter_ctc_wv_errors"] = result["ctc_wv_errors"]
-                    logging_output["inter_ctc_w_errors"] = result["ctc_w_errors"]
-                    logging_output["inter_ctc_w_total"] = result["ctc_w_total"]
-                    logging_output["inter_ctc_c_errors"] = result["ctc_c_errors"]
-                    logging_output["inter_ctc_c_total"] = result["ctc_c_total"]
+                        logging_output["ctc_wv_errors"] = result["ctc_wv_errors"]
+                        logging_output["ctc_w_errors"] = result["ctc_w_errors"]
+                        logging_output["ctc_w_total"] = result["ctc_w_total"]
+                        logging_output["ctc_c_errors"] = result["ctc_c_errors"]
+                        logging_output["ctc_c_total"] = result["ctc_c_total"]
 
-                    if self.eval_ctc_print:
-                        logger.info("Inter  H-{} {}".format(sample["id"][0], ' '.join(hyp)))
+                        if self.eval_ctc_print:
+                            logger.info("Joint  H-{} {}".format(sample["id"][0], ' '.join(hyp)))
 
-                else:
-                    logging_output["ctc_wv_errors"] = result["ctc_wv_errors"]
-                    logging_output["ctc_w_errors"] = result["ctc_w_errors"]
-                    logging_output["ctc_w_total"] = result["ctc_w_total"]
-                    logging_output["ctc_c_errors"] = result["ctc_c_errors"]
-                    logging_output["ctc_c_total"] = result["ctc_c_total"]
-
-                    if self.eval_ctc_print:
-                        logger.info("Joint  H-{} {}".format(sample["id"][0], ' '.join(hyp)))
-
-                    if self.inter_ctc:
+                    if (self.inter_ctc_weight > 0.0) and (inter_ctc_lprobs is not None):
                         inter_lprobs_t = inter_ctc_lprobs.transpose(0, 1).float().contiguous().cpu()
-                        inter_result, _, inter_hyp = self.comput_wer(sample, inter_lprobs_t, input_lengths)
+                        inter_result, tgt, inter_hyp = self.comput_wer(sample, inter_lprobs_t, input_lengths)
+
                         logging_output["inter_ctc_wv_errors"] = inter_result["ctc_wv_errors"]
                         logging_output["inter_ctc_w_errors"] = inter_result["ctc_w_errors"]
                         logging_output["inter_ctc_w_total"] = inter_result["ctc_w_total"]
@@ -219,8 +219,9 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
                         if self.eval_ctc_print:
                             logger.info("Inter  H-{} {}".format(sample["id"][0], ' '.join(inter_hyp)))
 
-                if self.eval_ctc_print:
-                    logger.info("============================================================")
+                    if self.eval_ctc_print:
+                        logger.info("Target T-{} {}".format(sample["id"][0], ' '.join(tgt)))
+                        logger.info("============================================================")
 
         if greedy_decoding:
             return loss, sample_size, logging_output, net_output

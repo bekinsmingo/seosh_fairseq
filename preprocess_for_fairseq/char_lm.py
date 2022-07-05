@@ -102,32 +102,31 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    decoder_path = os.path.join(args.model_dst, "decoder")
-    os.makedirs(decoder_path, exist_ok=True)
+    os.makedirs(args.model_dst, exist_ok=True)
 
 
     # Prepare data for char lm training/evaluation
-    if os.path.exists(os.path.join(decoder_path, "upper_char_lm_data2.train")):
+    if os.path.exists(os.path.join(args.model_dst, "upper_char_lm_data.train")):
         print(
             "Skip generation of {}. Please remove the file to regenerate it".format(
-                os.path.join(decoder_path, "upper_char_lm_data2.train")
+                os.path.join(args.model_dst, "upper_char_lm_data.train")
             )
         )
     else:
         convert_words_to_letters_ctc(
             os.path.join(args.data_dst, "text/librispeech-lm-norm.txt.upper.shuffle"),
-            os.path.join(decoder_path, "upper_char_lm_data2.train"),
+            os.path.join(args.model_dst, "upper_char_lm_data.train"),
             args.letter
         )
 
     convert_words_to_letters_ctc(
         os.path.join(args.data_dst, "text/upper-dev-clean.txt"),
-        os.path.join(decoder_path, "upper_char_lm_data2.dev-clean"),
+        os.path.join(args.model_dst, "upper_char_lm_data.dev-clean"),
         args.letter
     )
     convert_words_to_letters_ctc(
         os.path.join(args.data_dst, "text/upper-dev-other.txt"),
-        os.path.join(decoder_path, "upper_char_lm_data2.dev-other"),
+        os.path.join(args.model_dst, "upper_char_lm_data.dev-other"),
         args.letter
     )
 

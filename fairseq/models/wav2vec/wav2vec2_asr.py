@@ -607,7 +607,8 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
                 if len(padding_mask) > 0:
                     lens -= padding_mask[0].sum(dim=-1)
                     
-            return out, None, lens
+            # return out, None, lens
+            return None, out, lens
 
         else:
             # encoder_out = net_output[1]["encoder_out"]["encoder_out"][0]
@@ -1135,7 +1136,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         if soft_input is None:
             x = self.embed_scale * self.embed_tokens(prev_output_tokens)
         else:
-            x = self.embed_scale * F.linear(soft_input,self.embed_tokens.weight.T)
+            x = self.embed_scale * F.linear(soft_input, self.embed_tokens.weight.T)
 
         if self.project_in_dim is not None:
             x = self.project_in_dim(x)
