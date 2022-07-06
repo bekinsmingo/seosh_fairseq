@@ -120,6 +120,9 @@ class KenLMDecoder(BaseDecoder):
                 sil_score=cfg.silweight,
                 log_add=False,
                 criterion_type=CriterionType.CTC,
+                # uselexicon=false,
+                # decodertype='tkn',
+                # wordseparator='|',
             )
             self.decoder = LexiconFreeDecoder(
                 self.decoder_opts, 

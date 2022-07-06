@@ -246,13 +246,20 @@ def _main(cfg: DictConfig, output_file):
 
         gen_timer.start()
 
-        hypos = task.inference_step(
-            generator,
-            models,
-            sample,
-            prefix_tokens=prefix_tokens,
-            constraints=constraints,
-        )
+
+        with torch.no_grad():
+            hypos = task.inference_step(
+                generator,
+                models,
+                sample,
+                prefix_tokens=prefix_tokens,
+                constraints=constraints,
+            )
+
+            # net_output = models[0](**sample["net_input"])
+            # hypos2 = greedy_decoding(task, models[0], sample, net_output)
+            # Tra()
+
         num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
         gen_timer.stop(num_generated_tokens)
 
@@ -484,7 +491,7 @@ def _main(cfg: DictConfig, output_file):
         )
 
     return scorer
-
+    
 
 def cli_main():
     parser = options.get_generation_parser()

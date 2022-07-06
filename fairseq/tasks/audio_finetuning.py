@@ -399,6 +399,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
                 hyp = decode(gen_out[i][0]["tokens"]) # use only best beam 
             else:
                 hyp = decode(gen_out[i])
+            # Tra()
             ref = decode(
                 utils.strip_pad(sample["target"][i], self.target_dictionary.pad()),
             )
@@ -532,14 +533,19 @@ class AudioFinetuningTask(AudioPretrainingTask):
         with torch.no_grad():
             encoder_out = net_output[-1]
             prev_output_tokens = sample['net_input']['prev_output_tokens'][:,0].unsqueeze(1) # bos token
-            max_step = sample['net_input']['prev_output_tokens'].size(1)+5
+            max_step = sample['net_input']['prev_output_tokens'].size(1) + 5
             bsz = sample['net_input']['prev_output_tokens'].size(0)
+
+            eos_detect = torch.zeros_like(prev_output_tokens).type_as(prev_output_tokens)
+
             # max_step = model.max_positions()[1]
             # if max_step is None:
             #     max_step = 256
+
             accum_softmax_prob = torch.Tensor().type_as(encoder_out['encoder_out'])
+
             for i in range(max_step):
-                if (i > 1) and (model.soft_input_training) and (model.soft_input_training_updates <= model.encoder.num_updates) : 
+                if (i > 0) and (model.soft_input_training) and (model.soft_input_training_updates <= model.encoder.num_updates) : 
                     softmax_prob = model.decoder(prev_output_tokens=prev_output_tokens, encoder_out=encoder_out, soft_input=accum_softmax_prob)[0]
                 else:
                     softmax_prob = model.decoder(prev_output_tokens=prev_output_tokens, encoder_out=encoder_out)[0]
@@ -547,6 +553,42 @@ class AudioFinetuningTask(AudioPretrainingTask):
                 accum_softmax_prob = torch.cat((accum_softmax_prob,next_output_tokens_prob.unsqueeze(1)),1)
                 next_output_tokens = torch.argmax(next_output_tokens_prob,-1).unsqueeze(1)
                 prev_output_tokens = torch.cat((prev_output_tokens,next_output_tokens),-1)
-                if torch.sum(next_output_tokens == self.target_dictionary.eos()).item() == bsz :
+                # Tra()
+                if (next_output_tokens == self.target_dictionary.eos()).sum() > 1:
+                    eos_tokens = (next_output_tokens == self.target_dictionary.eos())
+                    eos_tokens.masked_fill_(eos_tokens == eos_detect.bool(), 0)
+                    eos_detect.masked_fill_(eos_tokens,i)
+                    # Tra()
+                    # (next_output_tokens == self.target_dictionary.eos()); eos_tokens; eos_detect;
+                    '''
+                    (Pdb) (next_output_tokens == self.target_dictionary.eos()); eos_tokens; eos_detect;
+                    tensor([[ True],
+                            [ True],
+                            [ True],
+                            [False],
+                            [ True],
+                            [ True],
+                            [False]], device='cuda:0')
+                    tensor([[False],
+                            [ True],
+                            [False],
+                            [False],
+                            [False],
+                            [False],
+                            [False]], device='cuda:0')
+                    tensor([[55],
+                            [72],
+                            [50],
+                            [45],
+                            [63],
+                            [53],
+                            [45]], device='cuda:0')
+                    '''
+                if torch.sum(eos_detect!=0).item() == bsz:
+                    # Tra()
+                    for i in range(eos_detect.size(0)):
+                        prev_output_tokens[i][(eos_detect[i].item()+1):] = self.target_dictionary.eos()
+                    # Tra()
                     break;
+
         return prev_output_tokens
