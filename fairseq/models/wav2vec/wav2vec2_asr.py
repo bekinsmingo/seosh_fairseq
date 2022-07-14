@@ -188,6 +188,13 @@ class Wav2Vec2AsrConfig(FairseqDataclass):
     ddp_backend: str = II("distributed_training.ddp_backend")
 
 
+
+
+
+#############################################################
+########################     CTC     ########################
+#############################################################
+
 @dataclass
 class Wav2Vec2CtcConfig(Wav2Vec2AsrConfig):
     blank_weight: float = 0
@@ -271,6 +278,10 @@ class Wav2VecCtc(BaseFairseqModel):
         # dict_keys(['encoder_out', 'padding_mask', 'layer_results'])
         return x
 
+
+#################################################################
+########################     Seq2seq     ########################
+#################################################################
 
 # @dataclass
 # class Wav2Vec2CtcForS2TConfig(Wav2Vec2CtcConfig):
@@ -368,6 +379,11 @@ class Wav2Vec2Seq2SeqConfig(Wav2Vec2AsrConfig):
     soft_input_training_updates: int = field(
         default=50000, metadata={"help": "tmp"}
     )
+
+    # ## for rnn decoder
+    # use_srupp_decoder: bool = field(
+    #     default=False, metadata={"help": "tmp"}
+    # ) 
 
 def need_finetuning(ft_params, param_name):
     if ft_params == "all":
@@ -510,11 +526,17 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
 
             return w2v_ctc
         else:
-            logger.info("| loading pretrained w2v2 model from {}".format(cfg.w2v_path))
             return Wav2VecEncoder(cfg, ctc_proj_dim = len(tgt_dict))
 
     @classmethod
     def build_decoder(cls, cfg: Wav2Vec2Seq2SeqConfig, tgt_dict, embed_tokens):
+
+        # if cfg.use_srupp_decoder:
+        #     decoder = SRUppDecoder(cfg, tgt_dict, embed_tokens)
+        #     decoder.reset_parameters()
+        #     return decoder
+        # else:
+
         if cfg.load_pretrained_decoder_from:
             _cfg = copy.deepcopy(cfg)
             # if cfg.adaptor_proj or cfg.encoder_embed_dim:  # not V0 arch
@@ -561,10 +583,12 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
             return TransformerDecoder(cfg, tgt_dict, embed_tokens)
 
     def forward(self, **kwargs):
-        encoder_out = self.encoder(**kwargs)    
+        encoder_out = self.encoder(**kwargs)
+        # Tra()
         if (self.soft_input_training) and (self.soft_input_training_updates <= self.encoder.num_updates):
             with torch.no_grad():
                 decoder_out = self.decoder(encoder_out=encoder_out, **kwargs)
+            # Tra()
             decoder_out = self.decoder(encoder_out=encoder_out, soft_input=decoder_out[0], **kwargs)
         else:
             decoder_out = self.decoder(encoder_out=encoder_out, **kwargs)
@@ -649,6 +673,10 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
         super().upgrade_state_dict_named(state_dict, name)
         return state_dict
 
+
+####################################################################
+########################     Transducer     ########################
+####################################################################
 
 
 @dataclass
@@ -748,6 +776,10 @@ class Wav2Vec2Transducer(BaseFairseqModel):
         
         return source_encodings.cuda(), output.cuda(), source_lengths.cuda()
 
+
+####################################################################
+#########################     Modules     ##########################
+####################################################################
 
 
 class Wav2VecEncoder(FairseqEncoder):
@@ -1100,6 +1132,8 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             for i, idx in enumerate(padding_start_idx): 
                 soft_input[i][idx:] = padding_vector.repeat(max_len-idx,1)
 
+            soft_input = F.softmax(soft_input, dim = -1)
+
         x, extra = self.extract_features(
             prev_output_tokens, encoder_out, incremental_state, soft_input
         )
@@ -1184,7 +1218,6 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         for layer in self.layers:
             dropout_probability = np.random.random()
             if not self.training or (dropout_probability > self.layerdrop):
-                # Tra()
                 '''
                 (Pdb) x.size(); encoder_out["encoder_out"].size();
                 torch.Size([116, 16, 768])
@@ -1198,6 +1231,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                     incremental_state,
                     self_attn_mask=self.buffered_future_mask(x) if incremental_state is None else None,
                     self_attn_padding_mask=self_attn_padding_mask,
+                    need_attn=True,
                 )
                 inner_states.append(x)
 
@@ -1238,6 +1272,470 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
     def upgrade_state_dict_named(self, state_dict, name):
         return state_dict
+
+
+# from fairseq.models import FairseqIncrementalDecoder
+# from fairseq.models.lstm import LSTMDecoder
+
+# from torch.nn.utils.rnn import PackedSequence
+# import torch.nn.functional as F
+# from torch import Tensor
+
+# @dataclass
+# class SRUppDecoderConfig(FairseqDataclass):
+#     ema_decay: float = field(
+#         default=0.9999, metadata={"help": "decay for exponential moving average model"}
+#     )
+#     ema_fp32: bool = field(
+#         default=False,
+#         metadata={"help": "If true, store EMA model in fp32 even if model is in fp16"},
+#     )
+#     input_size: int = field(
+#         default=None, metadata={"help": "tmp"}
+#     )
+#     hidden_size: int = field(
+#         default=768, metadata={"help": "tmp"}
+#     )
+#     proj_size: int = field(
+#         default=256, metadata={"help": "tmp"}
+#     )
+#     num_layers: int = field(
+#         default=2, metadata={"help": "tmp"}
+#     )
+#     dropout: float = field(
+#         default=0.0, metadata={"help": "tmp"}
+#     )
+#     attn_dropout: float = field(
+#         default=0.0, metadata={"help": "tmp"}
+#     )
+#     num_heads: int = field(
+#         default=1, metadata={"help": "tmp"}
+#     )
+#     bidirectional: bool = field(
+#         default=False, metadata={"help": "tmp"}
+#     )
+#     layer_norm: bool = field(
+#         default=False, metadata={"help": "tmp"}
+#     )
+#     normalize_after: bool = field(
+#         default=False, metadata={"help": "tmp"}
+#     )
+#     attn_layer_norm: bool = field(
+#         default=False, metadata={"help": "tmp"}
+#     )
+#     highway_bias: float = field(
+#         default=-2.0, metadata={"help": "tmp"}
+#     )
+#     attention_every_n_layers: int = field(
+#         default=1, metadata={"help": "tmp"}
+#     )
+#     attention_last_n_layers: int = field(
+#         default=-1, metadata={"help": "tmp"}
+#     )
+#     rescale: bool = field(
+#         default=False, metadata={"help": "tmp"}
+#     )
+#     nn_rnn_compatible_return: bool = field(
+#         default=False, metadata={"help": "tmp"}
+#     )
+#     proj_input_to_hidden_first: bool = field(
+#         default=False, metadata={"help": "tmp"}
+#     )
+#     weight_c_init: float = field(
+#         default=1.0, metadata={"help": "tmp"}
+#     )
+#     dropout_out: float = field(
+#         default=0.0, metadata={"help": "tmp"}
+#     )
+
+#     unroll_size: int = field(
+#         default=64, metadata={"help": "tmp"}
+#     )
+    
+
+# class SRUppDecoder(LSTMDecoder):
+#     def __init__(
+#         self,
+#         cfg: Wav2Vec2Seq2SeqConfig,
+#         dictionary,
+#         embed_tokens,
+#         ):
+#         super().__init__(dictionary)
+
+#         try:
+#             from sru import SRUppCell, SRUppAttention, SRUppProjectedLinear
+#         except ImportError as e:
+#             print("You have to install sru (e.g. pip install sru) check https://github.com/asappresearch/sru/tree/3.0.0-dev")
+
+#         self.cfg = SRUppDecoderConfig(
+#             input_size = embed_tokens.embedding_dim,
+#             hidden_size = cfg.decoder_embed_dim,
+#             num_layers = cfg.decoder_layers,
+#             dropout = cfg.decoder_dropout,
+#             attn_dropout = cfg.decoder_attention_dropout,
+#         )
+
+#         self.dictionary = dictionary
+#         self.num_embeddings = len(dictionary)
+#         self.embed_tokens = embed_tokens
+#         self.padding_idx = embed_tokens.padding_idx
+#         self.share_input_output_embed = cfg.share_decoder_input_output_embed
+
+#         self.input_size = self.cfg.input_size # the number of input features
+#         self.hidden_size = self.cfg.hidden_size # the number of features in the hidden state *for each direction*
+#         self.proj_size = self.cfg.proj_size # the number of features used for attention
+#         self.output_size = self.hidden_size
+#         self.num_layers = self.cfg.num_layers # the number of stacked SRU++ layers
+
+#         self.dropout = self.cfg.dropout # dropout probability applied between sub-layers
+#         self.bidirectional = self.cfg.bidirectional
+#         self.num_directions = 2 if self.bidirectional else 1
+
+#         self.normalize_after = self.cfg.normalize_after
+
+#         self.use_layer_norm = self.cfg.layer_norm # whether to apply layer normalization to each SRU++ layer
+#         self.layer_norm = self.cfg.layer_norm
+#         self.highway_bias = self.cfg.highway_bias # the initial value of the bias used in the highway (sigmoid) gate (default=-1.0)
+
+#         self.nn_rnn_compatible_return = self.cfg.nn_rnn_compatible_return 
+#         self.input_to_hidden: Optional[nn.Module] = None
+
+#         self.num_heads = self.cfg.num_heads
+#         self.attn_dropout = self.cfg.attn_dropout
+#         self.attn_layer_norm = self.cfg.attn_layer_norm # whether to apply layer norm in the attention module or projected linear module if attention is disabled (default=True).
+#         self.attention_last_n_layers = self.cfg.attention_last_n_layers
+#         self.attention_every_n_layers = self.cfg.attention_every_n_layers
+#         self.unroll_size = self.cfg.unroll_size
+
+#         self.rescale = self.cfg.rescale
+#         self.proj_input_to_hidden_first = self.cfg.proj_input_to_hidden_first
+
+#         self.weight_c_init = self.cfg.weight_c_init
+
+#         if self.proj_input_to_hidden_first and self.input_size != self.output_size:
+#             first_layer_input_size = self.output_size
+#             self.input_to_hidden = nn.Linear(self.input_size, self.output_size, bias=False)
+#             nn.init.xavier_uniform_(self.input_to_hidden.weight)
+#         else:
+#             first_layer_input_size = self.input_size
+
+#         # attention configuration
+#         if self.attention_last_n_layers != -1:
+#             use_attention = lambda ind: self.num_layers - ind <= self.attention_last_n_layers  # noqa
+#         else:
+#             use_attention = lambda ind: (ind + 1) % self.attention_every_n_layers == 0  # noqa
+
+#         self.layers = nn.ModuleList()
+#         for i in range(self.num_layers):
+#             # create the i-th SRU layer
+#             in_features = first_layer_input_size if i == 0 else self.output_size
+#             proj_features = self.proj_size
+#             out_features = self.output_size * (3 if in_features == self.output_size else 4)
+#             custom_m: Optional[nn.Module] = None
+
+#             if use_attention(i):
+#                 custom_m = SRUppAttention(
+#                     in_features,
+#                     out_features,
+#                     proj_features,
+#                     dropout=self.dropout,
+#                     attn_dropout=self.attn_dropout,
+#                     num_heads=self.num_heads,
+#                     layer_norm=self.attn_layer_norm,
+#                 )
+#             else:
+#                 custom_m = SRUppProjectedLinear(
+#                     in_features,
+#                     out_features,
+#                     proj_features,
+#                     dropout=self.dropout,
+#                     layer_norm=self.attn_layer_norm,
+#                 )
+
+#             layer = SRUppCell(
+#                 in_features,
+#                 self.hidden_size,
+#                 dropout=self.dropout if i + 1 != self.num_layers else 0,
+#                 bidirectional=self.bidirectional,
+#                 layer_norm=self.layer_norm,
+#                 normalize_after=self.normalize_after,
+#                 highway_bias=self.highway_bias,
+#                 rescale=self.rescale,
+#                 transform_module=custom_m,
+#                 weight_c_init=self.weight_c_init,
+#             )
+#             self.layers.append(layer)
+
+#         if not self.share_input_output_embed:
+#             self.embed_out = nn.Parameter(
+#                 torch.Tensor(self.num_embeddings, self.output_size)
+#             )
+#             nn.init.normal_(self.embed_out, mean=0, std=self.output_size**-0.5)
+
+#         self.dropout_out = torch.nn.Dropout(p=self.cfg.dropout_out)
+
+#         '''
+#         (Pdb) self.layers
+#         ModuleList(
+#         (0): SRUppCell(768, 768, dropout=0.1, highway_bias=-2.0,
+#             transform_module=SRUppAttention(
+#             (dropout): Dropout(p=0.1, inplace=False)
+#             (linear1): Linear(in_features=768, out_features=256, bias=False)
+#             (linear2): Linear(in_features=256, out_features=512, bias=False)
+#             (linear3): Linear(in_features=256, out_features=2304, bias=False)
+#         )
+#         )
+#         (1): SRUppCell(768, 768, dropout=0.1, highway_bias=-2.0,
+#             transform_module=SRUppAttention(
+#             (dropout): Dropout(p=0.1, inplace=False)
+#             (linear1): Linear(in_features=768, out_features=256, bias=False)
+#             (linear2): Linear(in_features=256, out_features=512, bias=False)
+#             (linear3): Linear(in_features=256, out_features=2304, bias=False)
+#         )
+#         )
+#         )
+#         '''
+
+#         # Tra()
+
+#     def forward(
+#         self,
+#         prev_output_tokens,
+#         encoder_out: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
+#         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+#         src_lengths: Optional[Tensor] = None,
+#         **unused
+#     ):
+#         x, attn_scores = self.extract_features(
+#             prev_output_tokens, encoder_out, incremental_state
+#         )
+#         return self.output_layer(x), attn_scores
+
+#     def extract_features(
+#         self,
+#         prev_output_tokens,
+#         encoder_out: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
+#         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+#         hidden: Optional[Tensor] = None,
+#         memory: Optional[List[Optional[Tensor]]] = None,
+#         memory_mask_pad: Optional[Tensor] = None,
+#         **unused
+#     ):
+
+#         """
+#         The forward method of SRUpp module should be like ...
+
+#         Inputs
+#         ----------
+#         input: Tensor
+#             the input feature. shape: (length, batch_size, input_size)
+#         c0: Tensor, optional
+#             the initial internal hidden state. shape: (num_layers,
+#             batch_size, output_size) where
+#             output_size = hidden_size * num_direction
+#         mask_pad: Tensor, optional
+#             the mask where a non-zero value indicates if an input token
+#             is pad token that should be ignored in forward and backward
+#             computation. shape: (length, batch_size)
+#         memory: a list of optional tensors, optional
+#             a list of memory tensors as additional inputs for the attention
+#             to attend to. the size of the list is equal to the number of layers
+#             of SRUpp module. memory[i] is the memory tensor for the (i+1)-th
+#             layer and its second dimension (batch size) and third dimension
+#             (hidden size) must be compatible with the input tensor to the
+#             (i+1)-th layer.
+#         memory_mask_pad: tensor, optional
+#             the mask tensor indicate if a position in the memory tensors is
+#             an invalid / pad token that should be ignored in attention.
+#             shape: (memory_length, batch_size)
+
+#         Returns
+#         ----------
+#         h: Tensor
+#             the output hidden state. shape: (length, batch_size,
+#             output_size) where
+#             output_size = hidden_size * num_direction
+#         c: Tensor
+#             the last internal hidden state. shape: (num_layers,
+#             batch_size, output_size), or (num_layers * num_directions,
+#             batch_size, hidden_size) if `nn_rnn_compatible_return` is
+#             set `True`
+#         memory_bank: Dict[str, List[Tensor]]
+#             a dictionary that stores various internal states indexed
+#             by state names. each value is a list of tensors in which
+#             the i-th element is the state tensor of the (i+1)-th layer.
+#             these internal states can be reused for attention for the
+#             next forward call during training and decoding.
+#         """
+
+#         if incremental_state is not None and len(incremental_state) > 0:
+#             prev_output_tokens = prev_output_tokens[:, -1:]
+
+#         input = self.embed_tokens(prev_output_tokens).transpose(0,1)
+#         mask_pad = (prev_output_tokens==self.padding_idx).transpose(0,1)
+
+#         length = input.size(0)
+#         bsz = input.size(1)
+#         input_size = input.size(2)
+#         num_layers = self.num_layers
+#         output_size = self.output_size
+
+#         c0 = self.init_hidden(bsz) if hidden is None else hidden
+#         memory = [None] * self.num_layers if memory is None else memory
+
+#         mem_len = 0 if memory[0] is None else memory[0].size(0)
+#         attn_mask = self.get_attn_mask(self.unroll_size, same_length=False)
+#         attn_mask = attn_mask[mem_len:mem_len + length, :mem_len + length]
+#         attn_mask = attn_mask.to(input.device)
+
+#         orig_input = input
+#         if isinstance(orig_input, PackedSequence):
+#             input, lengths = nn.utils.rnn.pad_packed_sequence(input)
+#             max_length = lengths.max().item()
+#             mask_pad = torch.ByteTensor([[0] * length + [1] * (max_length - length)
+#                                         for length in lengths.tolist()])
+#             mask_pad = mask_pad.to(input.device).transpose(0, 1).contiguous()
+
+#         # The dimensions of `input` should be: `(sequence_length, batch_size, input_size)`.
+#         if input.dim() != 3:
+#             raise ValueError("There must be 3 dimensions for (length, batch_size, input_size)")
+
+#         # # initialize previous states (or get from cache during incremental generation)
+#         # if incremental_state is not None and len(incremental_state) > 0:
+#         #     prev_hiddens, prev_cells, input_feed = self.get_cached_state(
+#         #         incremental_state
+#         #     )
+
+
+#         if input_size != self.input_size:
+#             raise ValueError("Input has size (*, *, {}) but expect a last dimension of {}".format(
+#                 input_size, self.input_size
+#             ))
+
+#         if c0 is None:
+#             zeros = torch.zeros(bsz, output_size, dtype=input.dtype, device=input.device)
+#             c0_ = [zeros for i in range(num_layers)]
+#         else:
+#             if list(c0.size()) != [num_layers, bsz, output_size]:
+#                 raise ValueError("c0 has size {} but expect {}.".format(
+#                     list(c0.size()),
+#                     [num_layers, bsz, output_size]
+#                 ))
+#             c0_ = [x.squeeze(0) for x in c0.chunk(self.num_layers, 0)]
+
+#         if mask_pad is not None and list(mask_pad.size()) != [length, bsz]:
+#             raise ValueError("mask_pad has size {} but expect {}.".format(
+#                 list(mask_pad.size()),
+#                 [length, bsz]
+#             ))
+
+#         if memory is not None and not isinstance(memory, list):
+#             raise ValueError("memory has type {} but expect List[Tensor].".format(
+#                 type(memory)
+#             ))
+
+#         if memory is not None and len(memory) != num_layers:
+#             raise ValueError("memory has size {} but expect {}.".format(
+#                 len(memory),
+#                 num_layers
+#             ))
+
+#         if self.input_to_hidden is None:
+#             x = input
+#         else:
+#             x = self.input_to_hidden(input)
+
+#         # Tra()
+
+#         prev_inputs = []
+#         lstc = []
+#         i = 0
+#         x = x.contiguous()
+#         for layer in self.layers:
+#             prev_inputs.append(x)
+#             memory_i = memory[i] if memory is not None else None
+#             h, c = layer(x, c0_[i],
+#                        mask_pad=mask_pad,
+#                        attn_mask=attn_mask,
+#                        memory=memory_i,
+#                        memory_mask_pad=memory_mask_pad)
+#             x = h
+#             lstc.append(c)
+#             i += 1
+#             '''
+#             (Pdb) x.size(); lstc[0].size(); 
+#             torch.Size([50, 16, 768])
+#             torch.Size([16, 768])
+#             '''
+#             # Tra()
+
+#         lstc_stack = torch.stack(lstc)
+#         if self.nn_rnn_compatible_return:
+#             lstc_stack = lstc_stack.view(num_layers, bsz, self.num_directions, self.hidden_size)
+#             lstc_stack = lstc_stack.transpose(1, 2).contiguous()
+#             lstc_stack = lstc_stack.view(num_layers * self.num_directions, bsz, self.hidden_size)
+
+#         if isinstance(orig_input, PackedSequence):
+#             h = nn.utils.rnn.pack_padded_sequence(h, lengths, enforce_sorted=False)
+
+#         Tra()
+
+#         # # Stack all the necessary tensors together and store
+#         # prev_hiddens_tensor = torch.stack(prev_hiddens)
+#         # prev_cells_tensor = torch.stack(prev_cells)
+#         # cache_state = torch.jit.annotate(
+#         #     Dict[str, Optional[Tensor]],
+#         #     {
+#         #         "prev_hiddens": prev_hiddens_tensor,
+#         #         "prev_cells": prev_cells_tensor,
+#         #         "input_feed": input_feed,
+#         #     },
+#         # )
+#         # self.set_incremental_state(incremental_state, "cached_state", cache_state)
+
+#         out = self.dropout_out(h)
+#         out = self.output_layer(out).transpose(0,1)
+#         attn_scores = None
+
+#         return out, (lstc_stack, {'saved_inputs': prev_inputs}, attn_scores)
+
+#     def init_hidden(self, batch_size):
+#         weight = next(self.parameters()).data
+#         zeros = weight.new(self.num_layers, batch_size, self.hidden_size).zero_()
+#         return zeros
+
+#     def get_attn_mask(self, mem_length, same_length=False):
+#         weight = next(self.parameters())
+#         ones = weight.new_ones(mem_length * 2, mem_length * 2)
+#         if same_length:
+#             ''' example: mem_length = 3
+#                 0 1 1 1 1 1
+#                 0 0 1 1 1 1
+#                 0 0 0 1 1 1
+#                 0 0 0 0 1 1
+#                 1 0 0 0 0 1
+#                 1 1 0 0 0 0
+#             '''
+#             attn_mask = (torch.triu(ones, diagonal=1) +
+#                               torch.tril(ones, diagonal=-1-mem_length)) * -10000.0
+#         else:
+#             attn_mask = torch.triu(ones, diagonal=1) * -10000.0
+        
+#         return attn_mask
+
+#     def output_layer(self, x):
+#         """Project features to the vocabulary size."""
+#         if self.share_input_output_embed:
+#             x = F.linear(x, self.embed_tokens.weight)
+#         else:
+#             x = F.linear(x, self.embed_out)
+#         return x
+
+#     def reset_parameters(self):
+#         for layer in self.layers:
+#             layer.reset_parameters()
+#         if self.input_to_hidden is not None:
+#             nn.init.xavier_uniform_(self.input_to_hidden.weight)
 
 
 def Embedding(num_embeddings, embedding_dim, padding_idx):

@@ -190,9 +190,6 @@ class SequenceScorer(object):
                     idx = end
                 sample["target"] = orig_target
 
-            # import pdb
-            # pdb.set_trace()
-
             probs = probs.view(sample["target"].shape)
 
             if avg_probs is None:
@@ -252,8 +249,5 @@ class SequenceScorer(object):
                     }
                 ]
             )
-
-        # import pdb
-        # pdb.set_trace()
 
         return hypos

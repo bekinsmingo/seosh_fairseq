@@ -105,8 +105,27 @@ def _main(cfg: DictConfig, output_file):
         num_shards=cfg.checkpoint.checkpoint_shard_count,
     )
 
+    # Tra()
+
     # loading the dataset should happen after the checkpoint has been loaded so we can give it the saved task config
     task.load_dataset(cfg.dataset.gen_subset, task_cfg=saved_cfg.task)
+
+    '''
+    (Pdb) cfg.keys()
+    dict_keys(['_name', 'common', 'common_eval', 'distributed_training', 'dataset', 'optimization', 'checkpoint', 'bmuf', 
+    'generation', 'eval_lm', 'interactive', 'model', 'task', 'criterion', 'optimizer', 'lr_scheduler', 'scoring', 
+    'bpe', 'tokenizer', 'ema', 'simul_type'])
+
+    (Pdb) cfg.generation
+    {'_name': None, 'beam': 1, 'nbest': 1, 'max_len_a': 0.0, 'max_len_b': 200, 'min_len': 1, 'match_source_len': False, 
+    'unnormalized': False, 'no_early_stop': False, 'no_beamable_mm': False, 'lenpen': 1.0, 'unkpen': 0.0, 'replace_unk': None, 
+    'sacrebleu': False, 'score_reference': False, 'prefix_size': 0, 'no_repeat_ngram_size': 0, 'sampling': False, 
+    'sampling_topk': -1, 'sampling_topp': -1.0, 'constraints': None, 'temperature': 1.0, 'diverse_beam_groups': -1, 
+    'diverse_beam_strength': 0.5, 'diversity_rate': -1.0, 'print_alignment': None, 'print_step': False, 'lm_path': None, 
+    'lm_weight': 0.0, 'iter_decode_eos_penalty': 0.0, 'iter_decode_max_iter': 10, 'iter_decode_force_max_iter': False, 
+    'iter_decode_with_beam': 1, 'iter_decode_with_external_reranker': False, 'retain_iter_history': False, 'retain_dropout': False, 
+    'retain_dropout_modules': None, 'decoding_format': None, 'no_seed_provided': False, 'eos_token': None}
+    '''
 
     if cfg.generation.lm_path is not None:
         overrides["data"] = cfg.task.data
@@ -182,6 +201,12 @@ def _main(cfg: DictConfig, output_file):
             x = tokenizer.decode(x)
         return x
 
+    # Tra()
+    '''
+    (Pdb) bpe
+    (Pdb) tokenizer
+    '''
+
     scorer = scoring.build_scorer(cfg.scoring, tgt_dict)
 
     # check tgt_dict once more
@@ -191,38 +216,49 @@ def _main(cfg: DictConfig, output_file):
         except:
             pass
 
+    '''
+    (Pdb) cfg.dataset.gen_subset; cfg.dataset.max_tokens; cfg.dataset.batch_size; cfg.dataset.skip_invalid_size_inputs_valid_test;
+    'dev_other'
+    4000000
+    False
+
+    (Pdb) cfg.scoring;
+    {'_name': 'wer', 'wer_tokenizer': 'none', 'wer_remove_punct': False, 'wer_char_level': False, 'wer_lowercase': False}
+
+    (Pdb) cfg.tokenizer
+    '''
     
-    if cfg.criterion._name == 'ctc':
-        total_len = list()
-        total_dist = list()
-        total_dist_ = list()
-        logging_outputs = list()
-        from fairseq.logging.meters import safe_round
+    # if cfg.criterion._name == 'ctc':
+    #     total_len = list()
+    #     total_dist = list()
+    #     total_dist_ = list()
+    #     logging_outputs = list()
+    #     from fairseq.logging.meters import safe_round
 
-        # build criterion
-        criterion = task.build_criterion(cfg.criterion)
+    #     # build criterion
+    #     criterion = task.build_criterion(cfg.criterion)
 
-        for sample in progress:
-            sample = utils.move_to_cuda(sample) if use_cuda else sample
-            if "net_input" not in sample:
-                continue
-            hypos = task.valid_step(sample, models[0], criterion)
-            '''
-            (Pdb) hypos
-            (tensor(141.6250, device='cuda:0'), 7, {'loss': 141.62496948242188, 'ntokens': 3411, 'nsentences': 7, 'sample_size': 7, 
-            'wv_errors': 33, 'w_errors': 33, 'w_total': 600, 'c_errors': 38, 'c_total': 3411})
-            '''
-            total_len.append(hypos[2]['w_total'])
-            total_dist.append(hypos[2]['w_errors'])
-            total_dist_.append(hypos[2]['wv_errors'])
-            # logging_outputs.append(hypos)
-            # task.reduce_metrics(logging_outputs, criterion)
-        # WER = sum(total_dist)/sum(total_len)
-        wer = safe_round(sum(total_dist) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan")
-        raw_wer = safe_round(sum(total_dist_) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan")
-        print('WER is {} <== ( safe_round(sum(total_dist) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan") )'.format(wer))
-        print('RAW WER is {} <== ( safe_round(sum(total_dist_) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan") )'.format(raw_wer))
-        return wer
+    #     for sample in progress:
+    #         sample = utils.move_to_cuda(sample) if use_cuda else sample
+    #         if "net_input" not in sample:
+    #             continue
+    #         hypos = task.valid_step(sample, models[0], criterion)
+    #         '''
+    #         (Pdb) hypos
+    #         (tensor(141.6250, device='cuda:0'), 7, {'loss': 141.62496948242188, 'ntokens': 3411, 'nsentences': 7, 'sample_size': 7, 
+    #         'wv_errors': 33, 'w_errors': 33, 'w_total': 600, 'c_errors': 38, 'c_total': 3411})
+    #         '''
+    #         total_len.append(hypos[2]['w_total'])
+    #         total_dist.append(hypos[2]['w_errors'])
+    #         total_dist_.append(hypos[2]['wv_errors'])
+    #         # logging_outputs.append(hypos)
+    #         # task.reduce_metrics(logging_outputs, criterion)
+    #     # WER = sum(total_dist)/sum(total_len)
+    #     wer = safe_round(sum(total_dist) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan")
+    #     raw_wer = safe_round(sum(total_dist_) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan")
+    #     print('WER is {} <== ( safe_round(sum(total_dist) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan") )'.format(wer))
+    #     print('RAW WER is {} <== ( safe_round(sum(total_dist_) * 100.0 / sum(total_len), 3) if sum(total_len) > 0 else float("nan") )'.format(raw_wer))
+    #     return wer
 
     num_sentences = 0
     has_target = True
@@ -258,7 +294,8 @@ def _main(cfg: DictConfig, output_file):
 
             # net_output = models[0](**sample["net_input"])
             # hypos2 = greedy_decoding(task, models[0], sample, net_output)
-            # Tra()
+
+        # Tra()
 
         num_generated_tokens = sum(len(h[0]["tokens"]) for h in hypos)
         gen_timer.stop(num_generated_tokens)
@@ -279,33 +316,29 @@ def _main(cfg: DictConfig, output_file):
             '''
             <<< ================== w2v2_seq2seq debugging ================== >>>
 
-            (Pdb) tgt_dict # None ? why?
-            (Pdb) task
-            <fairseq.tasks.audio_finetuning.AudioFinetuningTask object at 0x7f18ab33d5e0>
-            (Pdb) task.target_dictionary
-            <fairseq.data.dictionary.Dictionary object at 0x7f18ab33d460>
-            (Pdb) len(task.target_dictionary)
-            32
+            (Pdb) tgt_dict
+            <fairseq.data.dictionary.Dictionary object at 0x7f492443cf40>
 
-            (Pdb) sample.keys()
+            (Pdb) task; task.target_dictionary; len(task.target_dictionary);
+            <fairseq.tasks.audio_finetuning.AudioFinetuningTask object at 0x7f492441e580>
+            <fairseq.data.dictionary.Dictionary object at 0x7f492443cf40>
+            10001
+
+            (Pdb) sample.keys(); sample["net_input"].keys();
             dict_keys(['id', 'net_input', 'target_lengths', 'ntokens', 'target'])
-            (Pdb) sample["net_input"].keys()
             dict_keys(['source', 'padding_mask', 'prev_output_tokens'])
 
-            (Pdb) sample['net_input']['source'].size()
-            torch.Size([7, 552160])
-            (Pdb) sample['target'].size()
-            torch.Size([7, 620])
+            (Pdb) sample['net_input']['source'].size(); sample['target'].size();
+            torch.Size([7, 562480])
+            torch.Size([7, 90])
 
-            (Pdb) len(hypos)
+            (Pdb) len(hypos); len(hypos[0]); hypos[0][0].keys();
             7
-            (Pdb) len(hypos[0])
-            5
-            (Pdb) hypos[0][0].keys()
+            1
             dict_keys(['tokens', 'score', 'attention', 'alignment', 'positional_scores'])
 
+            ##### it was bug
             (Pdb) src_tokens # None
-
             (Pdb) tgt_dict.pad()
             *** AttributeError: 'NoneType' object has no attribute 'pad'
             '''
@@ -361,6 +394,49 @@ def _main(cfg: DictConfig, output_file):
                     remove_bpe=cfg.common_eval.post_process,
                     extra_symbols_to_ignore=get_symbols_to_strip_from_output(generator),
                 )
+
+                # Tra()
+
+                '''
+                (Pdb) hypo["tokens"]; hypo_tokens
+                tensor([  16, 5311,   38,   12,   21, 1237,   30,    8, 6616,   73,   50,  318,
+                        1136,   30,    8,  429,  803,   42,    4,  492,  137,   30,   59,   23,
+                        74,  260, 4060,  609,  232, 7871,   27,   17, 1857,    9,    6,   16,
+                        7970, 6808,   27,   17, 1857,    9,    6,   16, 7970, 6808,   27,   17,
+                        1857,    9,    6,   16, 7970,  137,   30,   59,   23,   74,  260, 4060,
+                        609,  232, 7871,   27,   17, 1857,    9,   13, 1826,    8,  441,    7,
+                        223,   57, 4060,  609,  232, 7871,   27,   17,   15,   30,   59,   23,
+                        74,  260, 4060,  609,  232, 7871,   27,   17, 1857,    9,   13, 1826,
+                        8,  441,    7,  223,   57, 4060,  609,  232, 7871,   27,   17, 1857,
+                        9,   13, 1826,    8,  441,    7,  223,   57, 4060,  609,  232, 7871,
+                        27,   17, 1857,    9,   13, 1826,    8,  441,    7,  223,   57, 4060,
+                        622,  508,  609,  232, 7871,   27,   17, 1857,    9,   13, 1826,    8,
+                        441,    7,  223,   57, 4060,  609,  232, 7871,   27,   17, 1857,    9,
+                        13, 1826,    8,  441,    7,  223,   57, 4060,  622,  508,  609,  232,
+                        7871,   27,   17, 1857,    9,   13, 1826,    8,  441,    7,  223,   57,
+                        4060, 5779,    9,   13,   15,   30,   59,   23,   74,  260, 4060, 5779,
+                        9,   13,   23,   74,  260, 4060, 5779,    9,    2], device='cuda:0')
+
+                tensor([10001, 10002, 10003,  1109, 10004, 10005,   785,   202, 10006,   343,
+                        10007, 10008,   785,   202, 10009, 10010, 10011,  2758, 10012, 10013,
+                        785, 10014,   381, 10015, 10016, 10017, 10018, 10019, 10020, 10021,
+                        10022, 10023, 10001, 10024, 10025, 10021, 10022, 10023, 10001, 10024,
+                        10025, 10021, 10022, 10023, 10001, 10024, 10013,   785, 10014,   381,
+                        10015, 10016, 10017, 10018, 10019, 10020, 10021, 10022, 10026, 10027,
+                        202, 10028,   879,  3057, 10029, 10017, 10018, 10019, 10020, 10021,
+                        424,   785, 10014,   381, 10015, 10016, 10017, 10018, 10019, 10020,
+                        10021, 10022, 10026, 10027,   202, 10028,   879,  3057, 10029, 10017,
+                        10018, 10019, 10020, 10021, 10022, 10026, 10027,   202, 10028,   879,
+                        3057, 10029, 10017, 10018, 10019, 10020, 10021, 10022, 10026, 10027,
+                        202, 10028,   879,  3057, 10029, 10030, 10018, 10019, 10020, 10021,
+                        10022, 10026, 10027,   202, 10028,   879,  3057, 10029, 10017, 10018,
+                        10019, 10020, 10021, 10022, 10026, 10027,   202, 10028,   879,  3057,
+                        10029, 10030, 10018, 10019, 10020, 10021, 10022, 10026, 10027,   202,
+                        10028,   879,  3057, 10029, 10017, 10031, 10026,   424,   785, 10014,
+                        381, 10015, 10016, 10017, 10031, 10026,   381, 10015, 10016, 10017,
+                        10031,     2], dtype=torch.int32)
+                '''
+
                 detok_hypo_str = decode_fn(hypo_str)
                 if not cfg.common_eval.quiet:
                     score = hypo["score"] / math.log(2)  # convert to base 2
@@ -455,6 +531,65 @@ def _main(cfg: DictConfig, output_file):
                         scorer.add_string(target_str, detok_hypo_str)
                     else:
                         scorer.add(target_tokens, hypo_tokens)
+
+                    '''
+                    joint inter vanilla (아 이거 그냥 학습이 안된거네 ㅋㅋ)
+
+                    (Pdb) detok_hypo_str
+                    'HIS ABODE WHICH HE HAD FIXED AT A BOWERY OR COUNTRY SEAT AT A SHORT DISTANCE FROM THE CITY JUST 
+                    AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS OF HIS INGENUITY PATENTED WITH PROOFS 
+                    OF HIS INGENUITY PATENTED WITH PROOFS OF HIS INGENUITY JUST AT WHAT IS NOW CALLED DUTCH STREET SOON 
+                    ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCH STREET SOON ABOUNDED WITH IT AT WHAT 
+                    IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCH STREET 
+                    SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCH STREET SOON ABOUNDED WITH PROOFS 
+                    THAT REQUIRED A HORSE TO WORK THEM DUTCHCOCK STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE 
+                    TO WORK THEM DUTCH STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCHCOCK STREET 
+                    SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCH OVENS THAT IT AT WHAT IS NOW CALLED 
+                    DUTCH OVENS THAT IS NOW CALLED DUTCH OVENS'
+
+                    (Pdb) target_str
+                    'HIS ABODE WHICH HE HAD FIXED AT A BOWERY OR COUNTRY SEAT AT A SHORT DISTANCE FROM THE CITY JUST AT 
+                    WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS OF HIS INGENUITY PATENT SMOKE JACKS THAT REQUIRED 
+                    A HORSE TO WORK THEM DUTCH OVENS THAT ROASTED MEAT WITHOUT FIRE CARTS THAT WENT BEFORE THE HORSES WEATHERCOCKS 
+                    THAT TURNED AGAINST THE WIND AND OTHER WRONG HEADED CONTRIVANCES THAT ASTONISHED AND CONFOUNDED ALL BEHOLDERS'
+
+                    (Pdb) hypo["tokens"]
+                    tensor([  16, 5311,   38,   12,   21, 1237,   30,    8, 6616,   73,   50,  318,
+                            1136,   30,    8,  429,  803,   42,    4,  492,  137,   30,   59,   23,
+                            74,  260, 4060,  609,  232, 7871,   27,   17, 1857,    9,    6,   16,
+                            7970, 6808,   27,   17, 1857,    9,    6,   16, 7970, 6808,   27,   17,
+                            1857,    9,    6,   16, 7970,  137,   30,   59,   23,   74,  260, 4060,
+                            609,  232, 7871,   27,   17, 1857,    9,   13, 1826,    8,  441,    7,
+                            223,   57, 4060,  609,  232, 7871,   27,   17,   15,   30,   59,   23,
+                            74,  260, 4060,  609,  232, 7871,   27,   17, 1857,    9,   13, 1826,
+                            8,  441,    7,  223,   57, 4060,  609,  232, 7871,   27,   17, 1857,
+                            9,   13, 1826,    8,  441,    7,  223,   57, 4060,  609,  232, 7871,
+                            27,   17, 1857,    9,   13, 1826,    8,  441,    7,  223,   57, 4060,
+                            622,  508,  609,  232, 7871,   27,   17, 1857,    9,   13, 1826,    8,
+                            441,    7,  223,   57, 4060,  609,  232, 7871,   27,   17, 1857,    9,
+                            13, 1826,    8,  441,    7,  223,   57, 4060,  622,  508,  609,  232,
+                            7871,   27,   17, 1857,    9,   13, 1826,    8,  441,    7,  223,   57,
+                            4060, 5779,    9,   13,   15,   30,   59,   23,   74,  260, 4060, 5779,
+                            9,   13,   23,   74,  260, 4060, 5779,    9,    2], device='cuda:0')
+                            
+                    '''
+
+                    '''
+                    vanilla (아 이거 그냥 joint 학습이 안된거네 ㅋㅋ)
+
+                    (Pdb) detok_hypo_str
+                    'HIS ABODE WHICH HE HAD FIXED AT A BOWERY OR COUNTRY SEAT AT A SHORT DISTANCE FROM THE CITY JUST 
+                    AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS OF HIS INGENUITY PATENT SMOKE JACKS 
+                    THAT WENT BEFORE THE HORSES WEATHERCOCKS THAT WENT BEFORE THE WIND AND OTHER WRONG HEADED CONTRIVANCES THAT ASTONISHED AND CONFOUNDED ALL BEHOLDERS'
+                    (Pdb) target_str
+                    'HIS ABODE WHICH HE HAD FIXED AT A BOWERY OR COUNTRY SEAT AT A SHORT DISTANCE FROM THE CITY JUST 
+                    AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS OF HIS INGENUITY PATENT SMOKE JACKS 
+                    THAT REQUIRED A HORSE TO WORK THEM DUTCH OVENS THAT ROASTED MEAT WITHOUT FIRE CARTS THAT WENT BEFORE 
+                    THE HORSES WEATHERCOCKS THAT TURNED AGAINST THE WIND AND OTHER WRONG HEADED CONTRIVANCES THAT ASTONISHED AND CONFOUNDED ALL BEHOLDERS'
+
+                    '''
+
+                    # Tra()
 
         wps_meter.update(num_generated_tokens)
         progress.log({"wps": round(wps_meter.avg)})

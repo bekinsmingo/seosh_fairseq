@@ -18,6 +18,8 @@ from fairseq.dataclass.utils import convert_namespace_to_omegaconf
 from fairseq.logging import metrics, progress_bar
 from fairseq.utils import reset_logging
 
+from pdb import set_trace as Tra
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -74,6 +76,8 @@ def main(cfg: DictConfig, override_args=None):
             model.half()
         if use_cuda:
             model.cuda()
+
+    # Tra()
 
     # Print args
     logger.info(saved_cfg)

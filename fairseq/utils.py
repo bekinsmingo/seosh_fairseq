@@ -34,6 +34,7 @@ try:
 except ImportError:
     xm = None
 
+from pdb import set_trace as Tra
 
 logger = logging.getLogger(__name__)
 
@@ -246,10 +247,94 @@ def post_process_prediction(
         hypo_str = replace_unk(
             hypo_str, src_str, alignment, align_dict, tgt_dict.unk_string()
         )
+    # Tra()
+
+    '''
+    (Pdb) tgt_dict.string(hypo_tokens); remove_bpe; hypo_str;
+    '▁HIS ▁ABODE ▁WHICH ▁HE ▁HAD ▁FIXED ▁AT ▁A ▁BOWER Y ▁OR ▁COUNTRY ▁SEAT ▁AT ▁A ▁SHORT ▁DISTANCE ▁FROM ▁THE ▁CITY ▁JUST 
+    ▁AT ▁WHAT ▁IS ▁NOW ▁CALLED ▁DUTCH ▁STREET ▁SOON ▁ABOUND ED ▁WITH ▁PROOF S ▁OF ▁HIS ▁INGENUITY ▁PATENT ED ▁WITH ▁PROOF 
+    S ▁OF ▁HIS ▁INGENUITY ▁PATENT ED ▁WITH ▁PROOF S ▁OF ▁HIS ▁INGENUITY ▁JUST ▁AT ▁WHAT ▁IS ▁NOW ▁CALLED ▁DUTCH ▁STREET 
+    ▁SOON ▁ABOUND ED ▁WITH ▁PROOF S ▁THAT ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK ▁THEM ▁DUTCH ▁STREET ▁SOON ▁ABOUND ED ▁WITH ▁IT 
+    ▁AT ▁WHAT ▁IS ▁NOW ▁CALLED ▁DUTCH ▁STREET ▁SOON ▁ABOUND ED ▁WITH ▁PROOF S ▁THAT ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK ▁THEM 
+    ▁DUTCH ▁STREET ▁SOON ▁ABOUND ED ▁WITH ▁PROOF S ▁THAT ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK ▁THEM ▁DUTCH ▁STREET ▁SOON ▁ABOUND 
+    ED ▁WITH ▁PROOF S ▁THAT ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK ▁THEM ▁DUTCH CO CK ▁STREET ▁SOON ▁ABOUND ED ▁WITH ▁PROOF S ▁THAT 
+    ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK ▁THEM ▁DUTCH ▁STREET ▁SOON ▁ABOUND ED ▁WITH ▁PROOF S ▁THAT ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK 
+    ▁THEM ▁DUTCH CO CK ▁STREET ▁SOON ▁ABOUND ED ▁WITH ▁PROOF S ▁THAT ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK ▁THEM ▁DUTCH ▁OVEN S ▁THAT 
+    ▁IT ▁AT ▁WHAT ▁IS ▁NOW ▁CALLED ▁DUTCH ▁OVEN S ▁THAT ▁IS ▁NOW ▁CALLED ▁DUTCH ▁OVEN S'
+    'wordpiece'
+    'HIS ABODE WHICH HE HAD FIXED AT A BOWERY OR COUNTRY SEAT AT A SHORT DISTANCE FROM THE CITY JUST AT WHAT IS NOW 
+    CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS OF HIS INGENUITY PATENTED WITH PROOFS OF HIS INGENUITY PATENTED WITH 
+    PROOFS OF HIS INGENUITY JUST AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO 
+    WORK THEM DUTCH STREET SOON ABOUNDED WITH IT AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED 
+    A HORSE TO WORK THEM DUTCH STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCH STREET SOON ABOUNDED 
+    WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCHCOCK STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO 
+    WORK THEM DUTCH STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCHCOCK
+    '''
+
+
+    '''
+    (Pdb) tgt_dict
+    <fairseq.data.dictionary.Dictionary object at 0x7f0a073f4400>
+    (Pdb) len(tgt_dict)
+    10001
+    (Pdb) hypo_str
+    'HIS ABODE WHICH HE HAD FIXED AT A BOWERY OR COUNTRY SEAT AT A SHORT DISTANCE FROM THE CITY JUST 
+    AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS OF HIS INGENUITY PATENTED WITH PROOFS 
+    OF HIS INGENUITY PATENTED WITH PROOFS OF HIS INGENUITY JUST AT WHAT IS NOW CALLED DUTCH STREET 
+    SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCH STREET SOON ABOUNDED WITH IT 
+    AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM 
+    DUTCH STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCH STREET SOON ABOUNDED 
+    WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCHCOCK STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED 
+    A HORSE TO WORK THEM DUTCH STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCHCOCK 
+    STREET SOON ABOUNDED WITH PROOFS THAT REQUIRED A HORSE TO WORK THEM DUTCH OVENS THAT IT AT WHAT IS NOW 
+    CALLED DUTCH OVENS THAT IS NOW CALLED DUTCH OVENS'
+    '''
+
     if align_dict is not None or remove_bpe is not None:
         # Convert back to tokens for evaluating with unk replacement or without BPE
         # Note that the dictionary can be modified inside the method.
-        hypo_tokens = tgt_dict.encode_line(hypo_str, add_if_not_exist=True)
+        hypo_tokens = tgt_dict.encode_line(hypo_str, add_if_not_exist=True) # wtf ?
+    '''
+    (Pdb) tgt_dict.encode_line(hypo_str, add_if_not_exist=False); len(tgt_dict)                                                                                 
+    tensor([   3,    3,    3, 1109,    3,    3,  785,  202,    3,  343,    3,    3,
+            785,  202,    3,    3,    3, 2758,    3,    3,  785,    3,  381,    3,
+            3,    3,    3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
+            3,    3,    3,    3,    3,    3,    3,    3,    3,    3,    3,  785,
+            3,  381,    3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
+            202,    3,  879, 3057,    3,    3,    3,    3,    3,    3,  424,  785,
+            3,  381,    3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
+            202,    3,  879, 3057,    3,    3,    3,    3,    3,    3,    3,    3,
+            3,  202,    3,  879, 3057,    3,    3,    3,    3,    3,    3,    3,
+            3,    3,  202,    3,  879, 3057,    3,    3,    3,    3,    3,    3,
+            3,    3,    3,  202,    3,  879, 3057,    3,    3,    3,    3,    3,
+            3,    3,    3,    3,  202,    3,  879, 3057,    3,    3,    3,    3,
+            3,    3,    3,    3,    3,  202,    3,  879, 3057,    3,    3,    3,
+            3,  424,  785,    3,  381,    3,    3,    3,    3,    3,  381,    3,
+            3,    3,    3,    2], dtype=torch.int32)
+    10001
+
+    (Pdb) tgt_dict.encode_line(hypo_str, add_if_not_exist=True); len(tgt_dict)
+    tensor([10001, 10002, 10003,  1109, 10004, 10005,   785,   202, 10006,   343,
+            10007, 10008,   785,   202, 10009, 10010, 10011,  2758, 10012, 10013,
+            785, 10014,   381, 10015, 10016, 10017, 10018, 10019, 10020, 10021,
+            10022, 10023, 10001, 10024, 10025, 10021, 10022, 10023, 10001, 10024,
+            10025, 10021, 10022, 10023, 10001, 10024, 10013,   785, 10014,   381,
+            10015, 10016, 10017, 10018, 10019, 10020, 10021, 10022, 10026, 10027,
+            202, 10028,   879,  3057, 10029, 10017, 10018, 10019, 10020, 10021,
+            424,   785, 10014,   381, 10015, 10016, 10017, 10018, 10019, 10020,
+            10021, 10022, 10026, 10027,   202, 10028,   879,  3057, 10029, 10017,
+            10018, 10019, 10020, 10021, 10022, 10026, 10027,   202, 10028,   879,
+            3057, 10029, 10017, 10018, 10019, 10020, 10021, 10022, 10026, 10027,
+            202, 10028,   879,  3057, 10029, 10030, 10018, 10019, 10020, 10021,
+            10022, 10026, 10027,   202, 10028,   879,  3057, 10029, 10017, 10018,
+            10019, 10020, 10021, 10022, 10026, 10027,   202, 10028,   879,  3057,
+            10029, 10030, 10018, 10019, 10020, 10021, 10022, 10026, 10027,   202,
+            10028,   879,  3057, 10029, 10017, 10031, 10026,   424,   785, 10014,
+            381, 10015, 10016, 10017, 10031, 10026,   381, 10015, 10016, 10017,
+            10031,     2], dtype=torch.int32)
+    10032
+
+    '''
     return hypo_tokens, hypo_str, alignment
 
 

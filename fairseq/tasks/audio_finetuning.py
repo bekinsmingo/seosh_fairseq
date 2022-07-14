@@ -532,9 +532,19 @@ class AudioFinetuningTask(AudioPretrainingTask):
     def greedy_decoding(self, model, sample, net_output):
         with torch.no_grad():
             encoder_out = net_output[-1]
+            bsz = encoder_out['encoder_out'].size(1)
+            enc_lens = encoder_out['encoder_out'].size(0)
+
+            # prev_output_tokens = (
+            #     torch.zeros(bsz, device='cuda')
+            #     .fill_(self.target_dictionary.eos())
+            #     .long()
+            # ).unsqueeze(1)
+
+            # max_step = enc_lens + 5
+            
             prev_output_tokens = sample['net_input']['prev_output_tokens'][:,0].unsqueeze(1) # bos token
             max_step = sample['net_input']['prev_output_tokens'].size(1) + 5
-            bsz = sample['net_input']['prev_output_tokens'].size(0)
 
             eos_detect = torch.zeros_like(prev_output_tokens).type_as(prev_output_tokens)
 
@@ -553,13 +563,12 @@ class AudioFinetuningTask(AudioPretrainingTask):
                 accum_softmax_prob = torch.cat((accum_softmax_prob,next_output_tokens_prob.unsqueeze(1)),1)
                 next_output_tokens = torch.argmax(next_output_tokens_prob,-1).unsqueeze(1)
                 prev_output_tokens = torch.cat((prev_output_tokens,next_output_tokens),-1)
-                # Tra()
+
                 if (next_output_tokens == self.target_dictionary.eos()).sum() > 1:
                     eos_tokens = (next_output_tokens == self.target_dictionary.eos())
                     eos_tokens.masked_fill_(eos_tokens == eos_detect.bool(), 0)
                     eos_detect.masked_fill_(eos_tokens,i)
-                    # Tra()
-                    # (next_output_tokens == self.target_dictionary.eos()); eos_tokens; eos_detect;
+
                     '''
                     (Pdb) (next_output_tokens == self.target_dictionary.eos()); eos_tokens; eos_detect;
                     tensor([[ True],
@@ -585,7 +594,7 @@ class AudioFinetuningTask(AudioPretrainingTask):
                             [45]], device='cuda:0')
                     '''
                 if torch.sum(eos_detect!=0).item() == bsz:
-                    # Tra()
+
                     for i in range(eos_detect.size(0)):
                         prev_output_tokens[i][(eos_detect[i].item()+1):] = self.target_dictionary.eos()
                     # Tra()

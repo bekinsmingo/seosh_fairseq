@@ -13,6 +13,8 @@ import time
 
 from fairseq import checkpoint_utils, distributed_utils, progress_bar, tasks, utils
 
+from pdb import set_trace as Tra
+
 
 class BaseDecoder:
     def __init__(self, tgt_dict: Dictionary) -> None:
@@ -37,7 +39,7 @@ class BaseDecoder:
         encoder_input = {
             k: v for k, v in sample["net_input"].items() if k != "prev_output_tokens"
         }
-        # import pdb; pdb.set_trace()
+        Tra()
         emissions = self.get_emissions(models, encoder_input)
         return self.decode(emissions)
 

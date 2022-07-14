@@ -98,6 +98,7 @@ class LabelSmoothedCrossEntropyWithCtcCriterion(LabelSmoothedCrossEntropyCriteri
             self.s2t_src_dict = self.task.source_dictionary
 
     def forward(self, model, sample, reduce=True, greedy_decoding=False):
+        # Tra()
         net_output = model(**sample["net_input"])
         ce_loss, nll_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
 

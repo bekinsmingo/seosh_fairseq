@@ -659,7 +659,6 @@ class FairseqTask(object):
 
         '''
 
-
         model.train()
         model.set_num_updates(update_num)
         with torch.autograd.profiler.record_function("forward"):
