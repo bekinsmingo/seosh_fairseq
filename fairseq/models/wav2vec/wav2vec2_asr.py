@@ -813,11 +813,10 @@ class Wav2VecEncoder(FairseqEncoder):
             "min_params_to_wrap": cfg.min_params_to_wrap,
         }
 
-        # Tra()
         # Why w2v2 seq2seq didnt save w2v_args? -> latest version has it
 
         if cfg.w2v_args is None:
-            state = checkpoint_utils.load_checkpoint_to_cpu(cfg.w2v_path, arg_overrides)
+            state = checkpoint_utils.load_checkpoint_to_cpu(cfg.w2v_path, arg_overrides) # /mnt/hdd~~
             w2v_args = state.get("cfg", None)
             if w2v_args is None:
                 w2v_args = convert_namespace_to_omegaconf(state["args"])
