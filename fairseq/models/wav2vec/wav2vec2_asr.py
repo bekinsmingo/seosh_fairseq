@@ -273,10 +273,28 @@ class Wav2VecCtc(BaseFairseqModel):
         else:
             return utils.softmax(logits.float(), dim=-1)
 
-    def forward(self, **kwargs):
-        x = self.w2v_encoder(**kwargs)
+    def forward(self, inter_ctc = False, **kwargs):
+        out = self.w2v_encoder(**kwargs)
         # dict_keys(['encoder_out', 'padding_mask', 'layer_results'])
-        return x
+        if inter_ctc:
+            num_layer = len(out["layer_results"])
+            inter_encoder_out = out["layer_results"][num_layer//2][0]
+
+            if self.w2v_encoder.w2v_model.encoder.layer_norm_first:
+                inter_encoder_out = inter_encoder_out.transpose(0,1)
+                inter_encoder_out = self.w2v_encoder.w2v_model.encoder.layer_norm(inter_encoder_out)
+                inter_encoder_out = inter_encoder_out.transpose(0,1)
+            inter_encoder_out = self.w2v_encoder.final_dropout(inter_encoder_out)
+            inter_logits = self.w2v_encoder.proj(inter_encoder_out)
+            inter_out = {
+                'encoder_out' : inter_logits,
+                'padding_mask' : out['padding_mask'],
+                'layer_results' : out['layer_results'],
+            }
+            # Tra()
+            return out, inter_out
+        else:
+            return out
 
 
 #################################################################
