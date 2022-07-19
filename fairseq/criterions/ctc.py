@@ -251,13 +251,13 @@ class CtcCriterion(FairseqCriterion):
 
         kld_loss = torch.tensor(0.0).type_as(ctc_loss)
         if (self.kld_loss) and (self.kld_loss_wegiht > 0.0):
-            logits = logits.transpose(0,1)
-            probs = probs.transpose(0,1)
-            log_probs = lprobs.transpose(0,1)
-            bs, _, vocab = logits.size()
+            logits_ = logits.transpose(0,1)
+            probs_ = probs.transpose(0,1)
+            log_probs_ = lprobs.transpose(0,1)
+            bs, _, vocab = logits_.size()
 
-            log_uniform = logits.new_zeros(logits.size()).fill_(math.log(1 / (vocab - 1)))
-            loss = torch.mul(probs, log_probs - log_uniform)
+            log_uniform = logits_.new_zeros(logits_.size()).fill_(math.log(1 / (vocab - 1)))
+            loss = torch.mul(probs_, log_probs_ - log_uniform)
             kld_loss_sum = sum([loss[b, :input_lengths[b], :].sum() for b in range(bs)])
             # kld_loss_mean = sum([loss[b, :input_lengths[b], :].sum() for b in range(bs)]) / input_lengths.sum()
 
