@@ -68,13 +68,16 @@ class CtcCriterionConfig(FairseqDataclass):
     )
 
     # inter CTC
-    inter_ctc_weight: float = field(default=1.0, metadata={"help": "weight for CTC loss"})
+    inter_ctc_weight: float = field(default=0.3, metadata={"help": "weight for CTC loss"})
     inter_ctc: bool = field(default=False, metadata={"help": "intermediate CTC loss"})
     inter_ctc_training_updates: int = field(default=0, metadata={"help": "activate inter ctc training after specific num_updates"})
     
     # eval print
     eval_ctc_print: bool = field(default=True, metadata={"help": "if you want to print hypothesis in every evaluation time"})
 
+    # inter CTC
+    kld_loss_weight: float = field(default=0.0, metadata={"help": "weight for CTC loss"})
+    kld_loss: bool = field(default=False, metadata={"help": "intermediate CTC loss"})
 
 @register_criterion("ctc", dataclass=CtcCriterionConfig)
 class CtcCriterion(FairseqCriterion):
@@ -129,7 +132,11 @@ class CtcCriterion(FairseqCriterion):
         self.inter_ctc = cfg.inter_ctc
         self.inter_ctc_weight = cfg.inter_ctc_weight
         self.inter_ctc_training_updates = cfg.inter_ctc_training_updates
+
         self.eval_ctc_print = cfg.eval_ctc_print
+
+        self.kld_loss = cfg.kld_loss
+        self.kld_loss_weight = cfg.kld_loss_weight
 
     def forward(self, model, sample, reduce=True):
         # Tra()
@@ -140,15 +147,23 @@ class CtcCriterion(FairseqCriterion):
         else:
             net_output = net_output[0]
 
-        lprobs = model.get_normalized_probs(
-            net_output, log_probs=True
-        ).contiguous()  # (T, B, C) from the encoder # e.g. torch.Size([634, 8, 32])
+        # lprobs = model.get_normalized_probs(
+        #     net_output, log_probs=True
+        # ).contiguous()  # (T, B, C) from the encoder # e.g. torch.Size([634, 8, 32])
+
+        logits = model.get_logits(net_output)
+        probs = utils.softmax(logits.float(), dim=-1).contiguous()
+        lprobs = utils.log_softmax(logits.float(), dim=-1).contiguous()
 
         if self.inter_ctc:
-            inter_ctc_lprobs = model.get_normalized_probs(
-                inter_net_output, log_probs=True
-            ).contiguous()  # (T, B, C) from the encoder # e.g. torch.Size([634, 8, 32])
+            # inter_ctc_lprobs = model.get_normalized_probs(
+            #     inter_net_output, log_probs=True
+            # ).contiguous()  # (T, B, C) from the encoder # e.g. torch.Size([634, 8, 32])
 
+            inter_ctc_logits = model.get_logits(inter_net_output)
+            inter_ctc_probs = utils.softmax(inter_ctc_logits.float(), dim=-1).contiguous()
+            inter_ctc_lprobs = utils.log_softmax(inter_ctc_logits.float(), dim=-1).contiguous()
+            
         if "src_lengths" in sample["net_input"]:
             input_lengths = sample["net_input"]["src_lengths"]
         else:
@@ -220,7 +235,6 @@ class CtcCriterion(FairseqCriterion):
             )
 
         inter_ctc_loss = torch.tensor(0.0).type_as(ctc_loss)
-
         if (self.inter_ctc_weight > 0.0) and (self.inter_ctc) and (self.inter_ctc_training_updates <= model.w2v_encoder.num_updates):
             with torch.backends.cudnn.flags(enabled=False):
                 inter_ctc_loss = (
@@ -235,10 +249,25 @@ class CtcCriterion(FairseqCriterion):
                     )
                 )
 
+        kld_loss = torch.tensor(0.0).type_as(ctc_loss)
+        if (self.kld_loss) and (self.kld_loss_wegiht > 0.0):
+            logits = logits.transpose(0,1)
+            probs = probs.transpose(0,1)
+            log_probs = lprobs.transpose(0,1)
+            bs, _, vocab = logits.size()
+
+            log_uniform = logits.new_zeros(logits.size()).fill_(math.log(1 / (vocab - 1)))
+            loss = torch.mul(probs, log_probs - log_uniform)
+            kld_loss_sum = sum([loss[b, :input_lengths[b], :].sum() for b in range(bs)])
+            # kld_loss_mean = sum([loss[b, :input_lengths[b], :].sum() for b in range(bs)]) / input_lengths.sum()
+
+            kld_loss = kld_loss_sum
+            
         # interpolation
         loss = (
             ctc_loss * (1-self.inter_ctc_weight)
             + inter_ctc_loss * self.inter_ctc_weight
+            + kld_loss * self.kld_loss_weight
         )
 
         ntokens = (
@@ -250,6 +279,7 @@ class CtcCriterion(FairseqCriterion):
             "loss": utils.item(loss.data),  # * sample['ntokens'],
             "ctc_loss": utils.item((ctc_loss * (1-self.inter_ctc_weight)).data),
             "inter_ctc_loss": utils.item((inter_ctc_loss * self.inter_ctc_weight).data),
+            "kld_loss": utils.item((kld_loss * self.kld_loss_weight).data),
             "ntokens": ntokens,
             "nsentences": sample["id"].numel(),
             "sample_size": sample_size,
@@ -286,71 +316,6 @@ class CtcCriterion(FairseqCriterion):
             if self.eval_ctc_print:
                 logger.info("TGT T-{} {}".format(sample["id"][0], ' '.join(tgt)))
                 logger.info("============================================================")
-
-
-            # with torch.no_grad():
-            #     lprobs_t = lprobs.transpose(0, 1).float().contiguous().cpu()
-
-            #     c_err = 0
-            #     c_len = 0
-            #     w_errs = 0
-            #     w_len = 0
-            #     wv_errs = 0
-            #     for lp, t, inp_l in zip(
-            #         lprobs_t,
-            #         sample["target_label"]
-            #         if "target_label" in sample
-            #         else sample["target"],
-            #         input_lengths,
-            #     ):
-            #         lp = lp[:inp_l].unsqueeze(0)
-
-            #         decoded = None
-            #         if self.w2l_decoder is not None:
-            #             decoded = self.w2l_decoder.decode(lp)
-            #             if len(decoded) < 1:
-            #                 decoded = None
-            #             else:
-            #                 decoded = decoded[0]
-            #                 if len(decoded) < 1:
-            #                     decoded = None
-            #                 else:
-            #                     decoded = decoded[0]
-
-            #         p = (t != self.task.target_dictionary.pad()) & (
-            #             t != self.task.target_dictionary.eos()
-            #         )
-            #         targ = t[p]
-            #         targ_units = self.task.target_dictionary.string(targ)
-            #         targ_units_arr = targ.tolist()
-
-            #         toks = lp.argmax(dim=-1).unique_consecutive()
-            #         pred_units_arr = toks[toks != self.blank_idx].tolist()
-
-            #         c_err += editdistance.eval(pred_units_arr, targ_units_arr)
-            #         c_len += len(targ_units_arr)
-
-            #         targ_words = post_process(targ_units, self.post_process).split()
-
-            #         pred_units = self.task.target_dictionary.string(pred_units_arr)
-            #         pred_words_raw = post_process(pred_units, self.post_process).split()
-
-            #         if decoded is not None and "words" in decoded:
-            #             pred_words = decoded["words"]
-            #             w_errs += editdistance.eval(pred_words, targ_words)
-            #             wv_errs += editdistance.eval(pred_words_raw, targ_words)
-            #         else:
-            #             dist = editdistance.eval(pred_words_raw, targ_words)
-            #             w_errs += dist
-            #             wv_errs += dist
-
-            #         w_len += len(targ_words)
-
-            #     logging_output["wv_errors"] = wv_errs
-            #     logging_output["w_errors"] = w_errs
-            #     logging_output["w_total"] = w_len
-            #     logging_output["c_errors"] = c_err
-            #     logging_output["c_total"] = c_len
 
         return loss, sample_size, logging_output
 
@@ -413,6 +378,7 @@ class CtcCriterion(FairseqCriterion):
         loss_sum = utils.item(sum(log.get("loss", 0) for log in logging_outputs))
         ctc_loss_sum = sum(log.get("ctc_loss", 0) for log in logging_outputs)
         inter_ctc_loss_sum = sum(log.get("inter_ctc_loss", 0) for log in logging_outputs)
+        kld_loss_sum = sum(log.get("kld_loss",0) for log in logging_outputs)
         ntokens = utils.item(sum(log.get("ntokens", 0) for log in logging_outputs))
         nsentences = utils.item(
             sum(log.get("nsentences", 0) for log in logging_outputs)
@@ -429,6 +395,9 @@ class CtcCriterion(FairseqCriterion):
         )
         metrics.log_scalar(
             "inter_ctc_loss", inter_ctc_loss_sum / sample_size / math.log(2), sample_size, round=3
+        )
+        metrics.log_scalar(
+            "kld_loss", kld_loss_sum / sample_size / math.log(2), sample_size, round=3
         )
 
         metrics.log_scalar("ntokens", ntokens)
