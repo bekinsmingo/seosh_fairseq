@@ -39,7 +39,7 @@ class BaseDecoder:
         encoder_input = {
             k: v for k, v in sample["net_input"].items() if k != "prev_output_tokens"
         }
-        Tra()
+        # Tra()
         emissions = self.get_emissions(models, encoder_input)
         return self.decode(emissions)
 

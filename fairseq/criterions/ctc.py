@@ -221,7 +221,7 @@ class CtcCriterion(FairseqCriterion):
 
         inter_ctc_loss = torch.tensor(0.0).type_as(ctc_loss)
 
-        if (self.inter_ctc_weight > 0.0) and (self.inter_ctc):
+        if (self.inter_ctc_weight > 0.0) and (self.inter_ctc) and (self.inter_ctc_training_updates <= model.w2v_encoder.num_updates):
             with torch.backends.cudnn.flags(enabled=False):
                 inter_ctc_loss = (
                     F.ctc_loss(

@@ -152,9 +152,6 @@ class LanguageModelingTask(LegacyFairseqTask):
     def __init__(self, args, dictionary, output_dictionary=None, targets=None):
         super().__init__(args)
 
-        # import pdb
-        # pdb.set_trace()
-
         self.dictionary = dictionary
         self.output_dictionary = output_dictionary or dictionary
 
@@ -171,12 +168,6 @@ class LanguageModelingTask(LegacyFairseqTask):
             assert len(paths) > 0
 
             dictionary = Dictionary.load(os.path.join(paths[0], "dict.txt"))
-
-            # import pdb
-            # pdb.set_trace()
-
-            # 여기가 키포인트
-            # 아래처럼 dict.txt가 꼭 포함되어 있어야함.
 
             '''
             .

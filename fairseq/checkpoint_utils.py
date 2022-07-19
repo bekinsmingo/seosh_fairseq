@@ -842,12 +842,14 @@ def load_pretrained_component_from_model(
             "component to load must be either a FairseqEncoder or "
             "FairseqDecoder. Loading other component types are not supported."
         )
+    # component_type = "decoder"
     component_state_dict = OrderedDict()
     for key in state["model"].keys():
         if key.startswith(component_type):
             # encoder.input_layers.0.0.weight --> input_layers.0.0.weight
             component_subkey = key[len(component_type) + 1 :]
             component_state_dict[component_subkey] = state["model"][key]
+    # Tra()
     component.load_state_dict(component_state_dict, strict=strict)
     return component
 

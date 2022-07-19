@@ -25,9 +25,16 @@ from fairseq.modules.quant_noise import quant_noise as apply_quant_noise_
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.utils import safe_getattr, safe_hasattr
 
+import copy
+from fairseq import checkpoint_utils, utils
+from typing import Dict, List, Optional, Tuple
+from collections import OrderedDict
+
 from .hub_interface import RobertaHubInterface
 
 logger = logging.getLogger(__name__)
+
+from pdb import set_trace as Tra
 
 
 @register_model("roberta")
@@ -46,7 +53,8 @@ class RobertaModel(FairseqEncoderModel):
         self.args = args
 
         # We follow BERT's random weight initialization
-        self.apply(init_bert_params)
+        if not getattr(args, "load_pretrained_encoder_from", None):
+            self.apply(init_bert_params)
 
         self.classification_heads = nn.ModuleDict()
 
@@ -216,6 +224,13 @@ class RobertaModel(FairseqEncoderModel):
             default=-1,
             help="number of feedforward blocks to remove in each transformer layer, -1 means keeping all ffn blocks",
         )
+        parser.add_argument(
+            "--load-pretrained-encoder-from",
+            type=str,
+            metavar="STR",
+            default=None,
+            help="model to take encoder weights from (for initialization)",
+        )
 
     @classmethod
     def build_model(cls, args, task):
@@ -239,7 +254,53 @@ class RobertaModel(FairseqEncoderModel):
         if OmegaConf.is_config(args):
             OmegaConf.set_struct(args, True)
 
+        if getattr(args, "load_pretrained_encoder_from", None):
+            encoder = cls.maybe_load_pretrained(
+                encoder, getattr(args, "load_pretrained_encoder_from", None)
+            )
+
+            for k, p in encoder.named_parameters():
+                p.requires_grad = need_finetuning('all', k)
+
         return cls(args, encoder)
+
+
+    @classmethod
+    def maybe_load_pretrained(cls, component, checkpoint: Optional[str] = None):
+        if checkpoint is None:
+            return component
+
+        from fairseq.file_io import PathManager
+        from fairseq.models import FairseqDecoder, FairseqEncoder
+
+        if not PathManager.exists(checkpoint):
+            raise IOError("Model file not found: {}".format(checkpoint))
+        state = checkpoint_utils.load_checkpoint_to_cpu(checkpoint)
+        # if isinstance(component, FairseqEncoder):
+        #     component_type = "encoder"
+        # elif isinstance(component, FairseqDecoder):
+        #     component_type = "decoder"
+        # else:
+        #     raise ValueError(
+        #         "component to load must be either a FairseqEncoder or "
+        #         "FairseqDecoder. Loading other component types are not supported."
+        #     )
+
+        ## idk why bert base has decoder instead encoder ...?
+        component_state_dict = OrderedDict()
+        for key in state["model"].keys():
+            # if key.startswith(component_type):
+            if key.startswith('encoder') or key.startswith('decoder'):
+                # encoder.input_layers.0.0.weight --> input_layers.0.0.weight
+                component_subkey = key[8:]
+                component_state_dict[component_subkey] = state["model"][key]
+        
+        try:
+            return component.load_state_dict(component_state_dict, strict=True)
+        except RuntimeError as e:
+            logger.warning(e)
+            return component.load_state_dict(component_state_dict, strict=False)
+
 
     def forward(
         self,
@@ -493,6 +554,16 @@ class RobertaLMHead(nn.Module):
         # project back to size of vocabulary with bias
         x = F.linear(x, self.weight) + self.bias
         return x
+
+
+def need_finetuning(ft_params, param_name):
+    if ft_params == "all":
+        return True
+    ft_params_list = ft_params.split(",")
+    for ft_param in ft_params_list:
+        if ft_param in param_name:
+            return True
+    return False
 
 
 class RobertaClassificationHead(nn.Module):

@@ -597,7 +597,6 @@ class AudioFinetuningTask(AudioPretrainingTask):
 
                     for i in range(eos_detect.size(0)):
                         prev_output_tokens[i][(eos_detect[i].item()+1):] = self.target_dictionary.eos()
-                    # Tra()
                     break;
 
         return prev_output_tokens

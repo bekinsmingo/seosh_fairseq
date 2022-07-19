@@ -15,6 +15,7 @@ from fairseq.modules import LayerNorm, MultiheadAttention
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.quant_noise import quant_noise
 
+from pdb import set_trace as Tra
 
 class TransformerEncoderLayerBase(nn.Module):
     """Encoder layer block.

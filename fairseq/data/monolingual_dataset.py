@@ -119,9 +119,6 @@ class MonolingualDataset(FairseqDataset):
             source, future_target, past_target = self.dataset[index]
             # source = self._maybe_add_bos_initially(source)
 
-            # import pdb
-            # pdb.set_trace()
-
             source, target = self._make_source_target(
                 source, future_target, past_target
             )
@@ -129,9 +126,6 @@ class MonolingualDataset(FairseqDataset):
             source = self.dataset[index]
             # source = self._maybe_add_bos_initially(source)
             target = None
-
-        # import pdb
-        # pdb.set_trace()
 
         if self.first_source_token_bos:
             source[0]=self.vocab.bos()
@@ -243,9 +237,6 @@ class MonolingualDataset(FairseqDataset):
                   target sentence of shape `(bsz, tgt_len)`. Padding will appear
                   on the right.
         """
-
-        # import pdb
-        # pdb.set_trace()
 
         '''
         (Pdb) len(samples)

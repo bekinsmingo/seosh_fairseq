@@ -558,7 +558,7 @@ class Wav2Vec2Seq2SeqModel(FairseqEncoderDecoderModel):
         if cfg.load_pretrained_decoder_from:
             _cfg = copy.deepcopy(cfg)
             # if cfg.adaptor_proj or cfg.encoder_embed_dim:  # not V0 arch
-            _cfg.encoder_embed_dim = _cfg.decoder_embed_dim
+            _cfg.encoder_embed_dim = cfg.decoder_embed_dim
             _cfg.dropout = cfg.decoder_dropout
             _cfg.attention_dropout = cfg.decoder_attention_dropout
             _cfg.activation_dropout = cfg.decoder_activation_dropout
