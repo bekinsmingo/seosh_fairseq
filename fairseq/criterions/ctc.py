@@ -144,8 +144,6 @@ class CtcCriterion(FairseqCriterion):
         if self.inter_ctc:
             inter_net_output = net_output[1]
             net_output = net_output[0]
-        else:
-            net_output = net_output[0]
 
         # lprobs = model.get_normalized_probs(
         #     net_output, log_probs=True
@@ -249,6 +247,11 @@ class CtcCriterion(FairseqCriterion):
                     )
                 )
 
+        '''
+        Source From 
+        https://github.com/hirofumi0810/neural_sp/blob/master/neural_sp/models/seq2seq/decoders/ctc.py#L129
+        https://github.com/hirofumi0810/neural_sp/blob/master/neural_sp/models/criterion.py#L110
+        '''
         kld_loss = torch.tensor(0.0).type_as(ctc_loss)
         if (self.kld_loss) and (self.kld_loss_weight > 0.0):
             logits_ = logits.transpose(0,1)
@@ -265,9 +268,9 @@ class CtcCriterion(FairseqCriterion):
             
         # interpolation
         loss = (
-            ctc_loss * (1-self.inter_ctc_weight)
-            + inter_ctc_loss * self.inter_ctc_weight
-            + kld_loss * self.kld_loss_weight
+            ctc_loss * (1 - self.inter_ctc_weight) # 0.7
+            + inter_ctc_loss * self.inter_ctc_weight # 0.3
+            + kld_loss * self.kld_loss_weight # + 0.3 
         )
 
         ntokens = (
